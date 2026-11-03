@@ -32,7 +32,8 @@ class UpdateError(RuntimeError):
     pass
 
 
-def version_tuple(value: str) -> tuple[int, int, int]:    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
+def version_tuple(value: str) -> tuple[int, int, int]:
+    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
         raise UpdateError("更新版本号格式无效。")
     parts = tuple(int(s) for s in value.split("."))
     if any(n > 100000 for n in parts):
@@ -66,7 +67,8 @@ def validate_manifest(payload: dict) -> dict:
     if type(size) is not int or not (1024 <= size <= MAX_ZIP_BYTES):
         raise UpdateError("更新包体积异常。")
     notes = payload.get("notes", "")
-    if not isinstance(notes, str):notes = ""    minimum = payload.get("minimum_supported_version", "7.1.0")
+    if not isinstance(notes, str):notes = ""
+    minimum = payload.get("minimum_supported_version", "7.1.0")
     version_tuple(minimum)
     return {
         "version": version,
@@ -100,7 +102,8 @@ def manifest_from_release(release: dict) -> dict:
     digest = asset.get("digest")
     if not isinstance(digest, str) or not digest.startswith("sha256:"):
         raise UpdateError("GitHub 尚未提供安装包 SHA-256 摘要；拒绝安装未经校验的文件。")
-    manifest = {        "schema": 1,
+    manifest = {
+        "schema": 1,
         "version": version,
         "asset": {
             "url": asset.get("browser_download_url"),
@@ -134,7 +137,8 @@ def fetch_latest(timeout: float = 10) -> dict:
     try:
         release = json.loads(data.decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
-        raise UpdateError("GitHub 返回的 Release 信息无法解析。") from exc    return manifest_from_release(release)
+        raise UpdateError("GitHub 返回的 Release 信息无法解析。") from exc
+    return manifest_from_release(release)
 
 
 def update_available(manifest: dict, current_version: str = APP_VERSION) -> bool:
@@ -168,7 +172,8 @@ def validate_zip(zip_path: Path) -> None:
             seen.add(folded)
             uncompressed+=info.file_size
             if uncompressed>800*1024*1024:raise UpdateError("更新包解压后的体积超出安全限制。")
-            mode=info.external_attr >> 16            if stat.S_IFMT(mode) == stat.S_IFLNK:
+            mode=info.external_attr >> 16
+            if stat.S_IFMT(mode) == stat.S_IFLNK:
                 raise UpdateError("更新包不允许符号链接。")
             if info.is_dir():continue
             top=parts[0]
@@ -202,7 +207,8 @@ def download_update(manifest: dict, progress: Callable[[int, int], None] | None 
                 chunk=resp.read(1024*1024)
                 if not chunk:break
                 total+=len(chunk)
-                if total>MAX_ZIP_BYTES:raise UpdateError("下载体积超出安全限制。")                out.write(chunk);sha.update(chunk)
+                if total>MAX_ZIP_BYTES:raise UpdateError("下载体积超出安全限制。")
+                out.write(chunk);sha.update(chunk)
                 if progress:progress(total,asset["size"])
         if total!=asset["size"]:raise UpdateError("下载大小与发布清单不一致。")
         if sha.hexdigest()!=asset["sha256"]:raise UpdateError("SHA-256 校验失败，拒绝安装更新。")
