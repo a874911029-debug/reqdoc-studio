@@ -1,0 +1,26 @@
+name: Source syntax and updater checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile source without executing GUI
+        shell: pwsh
+        run: python -m compileall -q src
+      - name: Test release updater
+        shell: pwsh
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -v -s tests -p 'test_updater*.py'
