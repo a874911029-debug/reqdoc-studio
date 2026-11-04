@@ -4,7 +4,7 @@ import reqdoc_updater as u
 
 
 class ReleaseTests(unittest.TestCase):
-    def make_release(self, version="7.5.1", repo="reqdoc-studio", digest=None):
+    def make_release(self, version="7.5.3", repo="reqdoc-studio", digest=None):
         sha = digest or ("b" * 64)
         filename = f"reqdoc-studio-win64-v{version}.zip"
         return {
@@ -29,7 +29,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_new_release(self):
         m = u.manifest_from_release(self.make_release())
-        self.assertEqual(m["version"], "7.5.1")
+        self.assertEqual(m["version"], "7.5.3")
         self.assertTrue(u.update_available(m))
 
     def test_untrusted_repo_rejected(self):
