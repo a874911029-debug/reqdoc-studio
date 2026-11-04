@@ -1,0 +1,48 @@
+name: ReqDoc V8 Windows candidate
+on:
+  push:
+    branches: [feature/reqdoc-v8-new-only]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install V8 dependencies
+        run: python -m pip install -r v8/requirements.txt
+      - name: Compile V8 sources
+        run: python -m compileall -q v8 scripts/build_v8.py
+      - name: Run V8 independent regression tests
+        shell: pwsh
+        env:
+          PYTHONPATH: v8
+        run: python -m unittest discover -v -s tests -p "test_v8_*.py"
+      - name: Validate updater script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'v8/updater.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }
+      - name: Build ReqDoc Studio portable EXE
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name ReqDocStudio --paths v8 --distpath dist --workpath build/v8 --specpath build/v8 v8/app.py
+      - name: Assemble verified V8 distribution
+        run: python scripts/build_v8.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReqDocStudio-V8-Windows
+          path: |
+            dist/reqdoc-v*-win64.zip
+            dist/v8-latest.json
+          if-no-files-found: error
+          retention-days: 14
