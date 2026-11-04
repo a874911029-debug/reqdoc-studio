@@ -9,7 +9,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "v8"))
-from core import VERSION  # noqa: E402
+from version import VERSION  # noqa: E402
 from update_client import BASE, FEED, validate_package  # noqa: E402
 
 def main():
