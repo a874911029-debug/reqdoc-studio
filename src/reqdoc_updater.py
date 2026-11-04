@@ -18,9 +18,15 @@ APP_VERSION = "7.5.4"
 PUBLIC_OWNER = "a874911029-debug"
 UPDATE_REPO = "reqdoc-studio"
 UPDATE_BRANCH = "updates"
-FEED_URL = (
+# Old 7.5.3 clients consume this forever-pinned bootstrap feed.
+LEGACY_FEED_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_OWNER}/{UPDATE_REPO}/"
     f"{UPDATE_BRANCH}/latest.json"
+)
+# Only 7.5.4+ clients read this second-stage feature/module feed.
+FEED_URL = (
+    f"https://raw.githubusercontent.com/{PUBLIC_OWNER}/{UPDATE_REPO}/"
+    f"{UPDATE_BRANCH}/module-latest.json"
 )
 PACKAGE_BASE_URL = (
     f"https://raw.githubusercontent.com/{PUBLIC_OWNER}/{UPDATE_REPO}/"
@@ -209,7 +215,10 @@ def validate_zip(zip_path: Path, expected_version: str | None = None) -> None:
         version_tuple(package_version)
         if expected_version and package_version != expected_version:
             raise UpdateError("更新包内部版本与更新清单不一致。")
-        if metadata.get("name") != "ReqDoc" or metadata.get("feed") != FEED_URL:
+        expected_feed = (
+            LEGACY_FEED_URL if package_type == "updater-bootstrap" else FEED_URL
+        )
+        if metadata.get("name") != "ReqDoc" or metadata.get("feed") != expected_feed:
             raise UpdateError("更新包的产品标识或更新通道不匹配。")
         # Package files are checked against the exact, immutable type allowlist above.
         if z.testzip() is not None:
