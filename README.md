@@ -30,10 +30,20 @@ V7.5.0 单仓库引导版已完成离线打包与代码检查。**首次 Release
 请勿提交 API Token、密钥、真实用户数据库、私人原始资料、个人日志、备份及临时安装文件。
 
 
-## V7.5.1 task action hotfix
+## V7.5.1 task action hotfix (superseded)
+This historical hotfix is superseded by V7.5.2.
 - Single-task actions now target the focused row, not a stale checkbox batch selection.
 - Changing the selected task preserves the previous task draft before loading the new task.
 - Add image opens the file picker before creating or changing an editor; cancelling has no side effects.
 - Paste image checks the clipboard first and does not create an empty task when no image exists.
 - Toolbar image insertion appends to the focused task; Ctrl+V in the editor preserves the caret.
 - The hotfix is version 7.5.1. No GitHub Release has been published yet; the update button will not find it until a Release asset is published.
+
+
+## V7.5.2 processed-task workspace
+- The task workspace opens with the processed task list as the primary view; the source-material pane is hidden by default.
+- Original imported files are read-only archives. The extracted source preview is read-only and is not the editable task result.
+- The editable result is stored in independent task records and document snapshots. Editing tasks does not modify the archived source file.
+- New-task and task-edit panels open in the main workspace instead of being obscured by the source pane.
+- Image insertion preserves the text caret. Click in the task body where the image belongs, then choose Insert image or Paste image; use Preview body to inspect the rendered result.
+- This source change has not yet been validated in a real Windows GUI session. The GitHub checks compile the source and run updater tests only.
