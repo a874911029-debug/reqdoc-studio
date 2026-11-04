@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "version": "7.5.3",
+  "asset": {
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-update-v7.5.3.zip",
+    "sha256": "72bbca1129484e76a3eb204761ae6ceecf36058078ba5a92ef1148c3b7d4e430",
+    "size": 5637
+  },
+  "notes": "首次迁移更新器：从 GitHub Releases 改为自动更新分支。本次只替换更新器，不覆盖主程序、Python 运行库和用户数据。",
+  "minimum_supported_version": "7.5.2",
+  "source_commit": "e81721ad02303fa26eb3e83e43b872e1e6f3a47a"
+}
