@@ -12,7 +12,7 @@ import tempfile
 import zipfile
 from urllib.request import Request, urlopen
 
-from core import VERSION
+from version import VERSION
 
 FEED = "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/v8-latest.json"
 BASE = "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/"
