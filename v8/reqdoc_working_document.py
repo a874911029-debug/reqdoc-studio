@@ -7,24 +7,30 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
 import re
+from collections import defaultdict
 from contextlib import ExitStack, nullcontext
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
+from reqdoc.gui.widgets import DOCUMENT_FONT, configure_document_styles, style_document_lines
 
 
 TASK_BLOCK_START = "<!-- reqdoc:tasks -->"
 TASK_BLOCK_END = "<!-- /reqdoc:tasks -->"
 TASK_START_MARK = "reqdoc_tasks_start"
 TASK_END_MARK = "reqdoc_tasks_end"
+MAIN_DOCUMENT_LABEL = "工作文档 / 任务清单"
+LEGACY_IMPORT_COPY = "legacy-import"
 TASK_BLOCK = re.compile(
     rf"^{re.escape(TASK_BLOCK_START)}\n.*?^{re.escape(TASK_BLOCK_END)}(?:\n|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 IMAGE_LINK = re.compile(r"!\[([^\]\r\n]*)\]\(([^)\r\n]+)\)")
+TASK_FIELDS = ("title", "section", "content")
 
 
 def _now():
@@ -39,6 +45,25 @@ def ensure_working_schema(store):
                 content TEXT NOT NULL DEFAULT '',
                 mode TEXT NOT NULL DEFAULT 'manual',
                 updated TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS studio_import_task_links(
+                doc TEXT NOT NULL,
+                copy_id TEXT NOT NULL,
+                task_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                source_item TEXT NOT NULL,
+                PRIMARY KEY(doc,copy_id,task_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS studio_import_copies(
+                doc TEXT NOT NULL,
+                id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                PRIMARY KEY(doc,id)
             )
         """)
 
@@ -58,11 +83,15 @@ def read_working_document(store, key, fallback=""):
     return fallback or ""
 
 
-def write_working_document(store, key, content, mode="manual", *, connection=None):
+def validate_working_content(content):
     if not isinstance(content, str):
         raise ValueError("工作文档内容必须是文本。")
     if len(content.encode("utf-8")) > 20 * 1024 * 1024:
         raise ValueError("工作文档不能超过 20 MB。")
+
+
+def write_working_document(store, key, content, mode="manual", *, connection=None):
+    validate_working_content(content)
     if connection is None:
         ensure_working_schema(store)
     with (store.conn() if connection is None else nullcontext(connection)) as conn:
@@ -76,13 +105,158 @@ def write_working_document(store, key, content, mode="manual", *, connection=Non
         """, (key, content, mode, _now()))
 
 
+def write_import_copy(conn, key, copy_id, name, content):
+    validate_working_content(content)
+    conn.execute("""
+        INSERT INTO studio_import_copies(doc,id,name,content) VALUES(?,?,?,?)
+        ON CONFLICT(doc,id) DO UPDATE SET content=excluded.content
+    """, (key, copy_id, name, content))
+
+
+def read_import_copy(store, key, copy_id):
+    with store.conn() as conn:
+        row = conn.execute(
+            "SELECT name,content FROM studio_import_copies WHERE doc=? AND id=?",
+            (key, copy_id),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT name,content FROM studio_sources WHERE doc=? AND id=?",
+                (key, copy_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError("导入副本不存在。")
+        return row
+
+
+def separate_legacy_import(conn, key, content):
+    """Keep edits from older versions that put imported text in the main editor."""
+    if content.strip():
+        sources = conn.execute(
+            "SELECT id,name,content FROM studio_sources WHERE doc=? ORDER BY created", (key,)
+        ).fetchall()
+        if len(sources) == 1:
+            copy_id, name, original = sources[0]
+            write_import_copy(conn, key, copy_id, name, content)
+            link_existing_copy_tasks(conn, key, copy_id, document_to_task_items(original))
+        else:
+            matches = [source for source in sources if content.rstrip() == source[2].rstrip()]
+            if len(matches) == 1:
+                copy_id, _, original = matches[0]
+                link_existing_copy_tasks(conn, key, copy_id, document_to_task_items(original))
+            elif not matches:
+                write_import_copy(conn, key, LEGACY_IMPORT_COPY, "旧版工作副本", content)
+    conn.execute(
+        "UPDATE studio_working_docs SET content='',mode='manual',updated=? WHERE doc=?",
+        (_now(), key),
+    )
+
+
 def delete_working_documents(store, keys):
     ensure_working_schema(store)
     with store.conn() as conn:
-        conn.executemany(
-            "DELETE FROM studio_working_docs WHERE doc=?",
-            [(key,) for key in keys],
+        keys = [(key,) for key in keys]
+        conn.executemany("DELETE FROM studio_working_docs WHERE doc=?", keys)
+        conn.executemany("DELETE FROM studio_import_copies WHERE doc=?", keys)
+        conn.executemany("DELETE FROM studio_import_task_links WHERE doc=?", keys)
+
+
+def import_item_values(item):
+    return {field: item[field] for field in TASK_FIELDS}
+
+
+def import_task_links(conn, key, copy_id):
+    return [
+        (task_id, position, json.loads(source))
+        for task_id, position, source in conn.execute(
+            "SELECT task_id,position,source_item FROM studio_import_task_links "
+            "WHERE doc=? AND copy_id=? ORDER BY position,task_id", (key, copy_id)
         )
+    ]
+
+
+def save_import_task_link(conn, key, copy_id, task_id, position, item):
+    conn.execute("""
+        INSERT INTO studio_import_task_links(doc,copy_id,task_id,position,source_item)
+        VALUES(?,?,?,?,?) ON CONFLICT(doc,copy_id,task_id) DO UPDATE SET
+            position=excluded.position, source_item=excluded.source_item
+    """, (key, copy_id, task_id, position, json.dumps(import_item_values(item), ensure_ascii=False)))
+
+
+def link_existing_copy_tasks(conn, key, copy_id, items):
+    """Recover old associations only when every source item has one exact match."""
+    if not items or import_task_links(conn, key, copy_id):
+        return
+    candidates = defaultdict(list)
+    for task_id, title, section, content in conn.execute("""
+        SELECT r.id,r.title,r.section,r.content FROM reqdoc_requirements r
+        WHERE r.project=? AND NOT EXISTS(SELECT 1 FROM studio_trash t WHERE t.id=r.id)
+            AND NOT EXISTS(SELECT 1 FROM studio_import_task_links l WHERE l.doc=r.project AND l.task_id=r.id)
+    """, (key,)):
+        candidates[(title, section, content)].append(task_id)
+    matches = [candidates[tuple(import_item_values(item).values())] for item in items]
+    if any(len(task_ids) != 1 for task_ids in matches):
+        return
+    ids = [task_ids[0] for task_ids in matches]
+    if len(set(ids)) != len(ids):
+        return
+    for position, (task_id, item) in enumerate(zip(ids, items)):
+        save_import_task_link(conn, key, copy_id, task_id, position, item)
+
+
+def match_import_task_links(links, items):
+    """Match exact and unique source fields before using stable positions."""
+    remaining_links = {task_id: (position, item) for task_id, position, item in links}
+    remaining_items = dict(enumerate(items))
+    matches = {}
+    for fields in (TASK_FIELDS, ("title", "section"), ("section", "content"), ("title", "content")):
+        left, right = defaultdict(list), defaultdict(list)
+        for task_id, (_, item) in remaining_links.items():
+            left[tuple(item[field] for field in fields)].append(task_id)
+        for position, item in remaining_items.items():
+            right[tuple(item[field] for field in fields)].append(position)
+        for fingerprint in left.keys() & right.keys():
+            ids, positions = left[fingerprint], right[fingerprint]
+            if len(ids) == len(positions) == 1 or (fields == TASK_FIELDS and len(ids) == len(positions)):
+                for task_id, position in zip(ids, positions):
+                    matches[position] = (task_id, remaining_links.pop(task_id)[1])
+                    remaining_items.pop(position)
+    if len(links) == len(items):
+        for task_id, (position, item) in remaining_links.items():
+            if position in remaining_items:
+                matches[position] = (task_id, item)
+                remaining_items.pop(position)
+    return matches
+
+
+def sync_import_tasks(conn, key, copy_id, content):
+    links = import_task_links(conn, key, copy_id)
+    if not links:
+        return False
+    items = document_to_task_items(content)
+    changed = False
+    for position, (task_id, previous) in match_import_task_links(links, items).items():
+        current = import_item_values(items[position])
+        fields = [current[field] if current[field] != previous[field] else None for field in TASK_FIELDS]
+        if any(value is not None for value in fields):
+            updated = conn.execute("""
+                UPDATE reqdoc_requirements SET title=coalesce(?,title), section=coalesce(?,section),
+                    content=coalesce(?,content), updated_at=?
+                WHERE project=? AND id=? AND NOT EXISTS(SELECT 1 FROM studio_trash WHERE id=?)
+            """, (*fields, _now(), key, task_id, task_id))
+            changed |= bool(updated.rowcount)
+        save_import_task_link(conn, key, copy_id, task_id, position, current)
+    return changed
+
+
+def add_import_tasks(service, conn, key, copy_id, items):
+    if not items:
+        return 0
+    positions, rows = zip(*items)
+    ids = service.commit_task_rows(key, rows, connection=conn)
+    for task_id, position, row in zip(ids, positions, rows):
+        save_import_task_link(conn, key, copy_id, task_id, position, row)
+    return len(ids)
 
 
 def document_to_task_items(content):
@@ -226,11 +400,31 @@ def task_list_right_click(self, event):
     return "break"
 
 
+def configure_task_detail_styles(widget):
+    widget.configure(font=(DOCUMENT_FONT, 11))
+    widget.tag_configure("detail_title", font=(DOCUMENT_FONT, 13, "bold"), spacing1=4, spacing3=3)
+    widget.tag_configure("detail_metadata", font=(DOCUMENT_FONT, 9), foreground="#52647B")
+    widget.tag_raise("sel")
+
+
+def render_task_details(widget, entries, empty_message, separator_width):
+    widget.configure(state="normal")
+    widget.delete("1.0", "end")
+    if not entries:
+        widget.insert("end", empty_message)
+    for title, metadata, body in entries:
+        widget.insert("end", title + "\n", "detail_title")
+        widget.insert("end", metadata + "\n", "detail_metadata")
+        widget.insert("end", body + "\n", ())
+        widget.insert("end", "─" * separator_width + "\n", "detail_metadata")
+    widget.configure(state="disabled")
+
+
 def refresh_task_detail(self):
     if not hasattr(self, "task_detail"):
         return
     selected = list(self.list.selection()) if hasattr(self, "list") else []
-    lines = []
+    entries = []
     for item in selected:
         if not str(item).isdigit():
             continue
@@ -238,25 +432,19 @@ def refresh_task_detail(self):
             row = self.s.get_requirement(int(item))
         except Exception:
             continue
-        lines.extend([
+        entries.append((
             row.title or "（无标题）",
-            f"所属分组：{row.section or '未分类'}    状态：{'已完成' if row.done else '未完成'}",
-            "",
+            f"所属分组：{row.section or '未分类'}    状态：{'已完成' if row.done else '未完成'}\n",
             row.content.strip() or "（无任务详情）",
-            "─" * 48,
-            "",
-        ])
-    self.task_detail.configure(state="normal")
-    self.task_detail.delete("1.0", "end")
-    self.task_detail.insert("1.0", "\n".join(lines) if lines else "选择任务后，这里显示可自由框选和复制的任务明细。")
-    self.task_detail.configure(state="disabled")
+        ))
+    render_task_details(self.task_detail, entries, "选择任务后，这里显示可自由框选和复制的任务明细。", 48)
 
 
 def build_import_page(self):
     page = self.pages["import"]
     self.page_title(
         page, "导入文件",
-        "导入后生成独立可编辑工作文档；原始文件只读归档，不提供原件预览或编辑。",
+        "每个文件生成独立的可编辑副本，可在任务处理页按文件名切换。",
     )
     panel = ttk.LabelFrame(page, text="导入资料", padding=18)
     panel.pack(fill="x", pady=(0, 12))
@@ -267,7 +455,7 @@ def build_import_page(self):
     ).pack(anchor="w", pady=(0, 8))
     ttk.Label(
         panel,
-        text="导入后选择：形成可编辑工作文档/表格，或直接从内容生成任务。两种方式都会保留独立工作文档。",
+        text="可只创建导入副本，也可同时生成任务。副本和工作文档分别显示。",
         foreground="#64748B", wraplength=900, justify="left",
     ).pack(anchor="w", pady=(0, 12))
     ttk.Button(
@@ -332,7 +520,7 @@ def build_tasks_page(self):
     self.tasks_heading.pack(anchor="w", pady=(0, 3))
     self.tasks_subtitle = ttk.Label(
         page,
-        text="左侧是导入后生成的独立可编辑工作文档；右侧是从工作文档生成或手动新增的任务。",
+        text="左侧可切换工作文档和各导入副本，右侧显示当前文档的任务。",
         foreground="#64748B",
     )
     self.tasks_subtitle.pack(anchor="w", pady=(0, 8))
@@ -359,9 +547,19 @@ def build_tasks_page(self):
     self.tasks_split = ttk.Panedwindow(page, orient="horizontal")
     self.tasks_split.pack(fill="both", expand=True)
 
-    left = ttk.LabelFrame(self.tasks_split, text="可编辑工作文档（独立副本）", padding=7)
+    left = ttk.LabelFrame(self.tasks_split, text="文档编辑", padding=7)
     self.task_working_panel = left
     self.tasks_split.add(left, weight=3)
+    viewbar = ttk.Frame(left)
+    viewbar.pack(fill="x", pady=(0, 5))
+    ttk.Label(viewbar, text="显示文档").pack(side="left", padx=(0, 6))
+    self.working_view_var = tk.StringVar(value=MAIN_DOCUMENT_LABEL)
+    self.working_view_box = ttk.Combobox(viewbar, textvariable=self.working_view_var, state="readonly")
+    self.working_view_box.pack(side="left", fill="x", expand=True)
+    self.working_view_box.bind("<<ComboboxSelected>>", lambda event: self.guard(lambda: on_working_view_selected(self)))
+    self._working_view_ids = {MAIN_DOCUMENT_LABEL: None}
+    self._working_copy_id = None
+    self._working_copy_name = ""
     workbar = ttk.Frame(left)
     workbar.pack(fill="x", pady=(0, 6))
     for label, command in [
@@ -392,10 +590,11 @@ def build_tasks_page(self):
     area = ttk.Frame(left)
     area.pack(fill="both", expand=True)
     self.working_text = tk.Text(
-        area, wrap="word", undo=True, font=("Microsoft YaHei", 10),
+        area, wrap="word", undo=True,
         padx=12, pady=10, relief="flat", bg="white", fg="#243247",
         insertwidth=2, spacing3=4,
     )
+    configure_document_styles(self.working_text)
     wy = ttk.Scrollbar(area, orient="vertical", command=self.working_text.yview)
     wx = ttk.Scrollbar(area, orient="horizontal", command=self.working_text.xview)
     self.working_text.configure(yscrollcommand=wy.set, xscrollcommand=wx.set)
@@ -404,6 +603,7 @@ def build_tasks_page(self):
     self.working_text.pack(fill="both", expand=True)
     self.working_text.bind("<<Modified>>", self.working_document_modified)
     self.working_text.bind("<<Paste>>", self.working_paste_event)
+    self.working_text.bind("<<Undo>>", lambda event: undo_working_text(self))
     _install_text_selection(self.working_text)
     self.working_text.bind("<Button-3>", lambda event: working_document_menu(self, event))
     self.working_text.tag_configure("task_marker", elide=True)
@@ -518,10 +718,11 @@ def build_tasks_page(self):
     detail_area = ttk.Frame(task_detail_panel)
     detail_area.pack(fill="both", expand=True)
     self.task_detail = tk.Text(
-        detail_area, wrap="word", font=("Microsoft YaHei", 9),
+        detail_area, wrap="word",
         padx=10, pady=8, relief="flat", bg="white", fg="#243247",
         state="disabled", exportselection=False,
     )
+    configure_task_detail_styles(self.task_detail)
     detail_scroll = ttk.Scrollbar(detail_area, orient="vertical", command=self.task_detail.yview)
     self.task_detail.configure(yscrollcommand=detail_scroll.set)
     detail_scroll.pack(side="right", fill="y")
@@ -602,10 +803,11 @@ def build_progress_page(self):
     detail_box = ttk.LabelFrame(split, text="任务明细（可框选文本，右键复制）", padding=6)
     split.add(detail_box, weight=4)
     self.progress_detail = tk.Text(
-        detail_box, wrap="word", font=("Microsoft YaHei", 10),
+        detail_box, wrap="word",
         padx=12, pady=10, relief="flat", bg="white", fg="#243247",
         state="disabled",
     )
+    configure_task_detail_styles(self.progress_detail)
     dy = ttk.Scrollbar(detail_box, orient="vertical", command=self.progress_detail.yview)
     self.progress_detail.configure(yscrollcommand=dy.set)
     dy.pack(side="right", fill="y")
@@ -655,15 +857,25 @@ def working_document_modified(self, event=None):
                 self._working_task_edit_after_id = self.after(350, lambda: self.guard(lambda: apply_working_task_edits(self)))
         self.working_text.edit_modified(False)
         if self._working_preview_after_id is None:
-            self._working_preview_after_id = self.after_idle(lambda: refresh_working_images(self))
+            self._working_preview_after_id = self.after_idle(lambda: refresh_working_view(self))
 
 
-def refresh_working_images(self):
+def undo_working_text(self):
+    try:
+        self.working_text.edit_undo()
+    except tk.TclError:
+        self.status.set("当前文档没有可撤销的编辑。")
+    else:
+        self.status.set("已撤销当前文档的编辑。")
+    return "break"
+
+
+def refresh_working_view(self):
     from PIL import Image, ImageTk, ImageOps
 
     self._working_preview_after_id = None
     text = self.working_text
-    content = text.get("1.0", "end-1c")
+    lines = text.get("1.0", "end-1c").split("\n")
     previews = {}
     links = {}
     base = self.s.document_folder(self.key).resolve() if self.key else None
@@ -672,7 +884,8 @@ def refresh_working_images(self):
         text.delete(index)
     text.tag_remove("task_marker", "1.0", "end")
     text.tag_remove("image_markup", "1.0", "end")
-    for line, value in enumerate(content.split("\n"), 1):
+    style_document_lines(text, lines)
+    for line, value in enumerate(lines, 1):
         if value in (TASK_BLOCK_START, TASK_BLOCK_END):
             text.tag_add("task_marker", f"{line}.0", f"{line + 1}.0")
         if base is None:
@@ -714,7 +927,7 @@ def set_working_text(self, content):
     self._working_dirty = False
     if self._working_preview_after_id is not None:
         self.after_cancel(self._working_preview_after_id)
-    refresh_working_images(self)
+    refresh_working_view(self)
 
 
 def clear_working_task_marks(self):
@@ -729,7 +942,7 @@ def clear_working_task_marks(self):
 
 
 def sync_working_tasks(self, rows, force=False):
-    if not self.key or self._working_saved_key != self.key:
+    if not self.key or self._working_saved_key != self.key or self._working_copy_id is not None:
         return
     if self._working_task_edit_after_id is not None:
         self._working_task_refresh_pending = True
@@ -829,14 +1042,70 @@ def flush_working_task_edits(self):
         apply_working_task_edits(self)
 
 
+def refresh_working_views(self):
+    self._working_view_ids = {MAIN_DOCUMENT_LABEL: None}
+    if self.key:
+        with self.store.conn() as conn:
+            sources = conn.execute(
+                "SELECT id,name FROM studio_sources WHERE doc=? ORDER BY created DESC,id", (self.key,)
+            ).fetchall()
+            preserved = conn.execute(
+                "SELECT id,name FROM studio_import_copies WHERE doc=? AND id=?",
+                (self.key, LEGACY_IMPORT_COPY),
+            ).fetchall()
+        for copy_id, name in sources + preserved:
+            label = f"副本 · {name}"
+            suffix = 2
+            while label in self._working_view_ids:
+                label = f"副本 · {name}（{suffix}）"
+                suffix += 1
+            self._working_view_ids[label] = copy_id
+    self.working_view_box.configure(values=tuple(self._working_view_ids), state="readonly" if self.key else "disabled")
+    label = next((label for label, copy_id in self._working_view_ids.items() if copy_id == self._working_copy_id),
+                 MAIN_DOCUMENT_LABEL)
+    self.working_view_var.set(label)
+
+
+def on_working_view_selected(self):
+    copy_id = self._working_view_ids[self.working_view_var.get()]
+    if copy_id == self._working_copy_id:
+        return
+    previous = self._working_copy_id
+    try:
+        self.keep_draft()
+        self._working_copy_id = copy_id
+        self.load_working_document()
+    except Exception:
+        self._working_copy_id = previous
+        refresh_working_views(self)
+        raise
+
+
 def load_working_document(self):
     if not self.key:
         self._working_saved_key = None
+        self._working_copy_id = None
         set_working_text(self, "")
+        refresh_working_views(self)
         return
+    if self._working_copy_id is not None:
+        self._working_copy_name, content = read_import_copy(self.store, self.key, self._working_copy_id)
+        set_working_text(self, content)
+        self._working_saved_key = self.key
+        refresh_working_views(self)
+        self.working_hint.configure(text="导入副本独立编辑，可从此副本转成任务。")
+        self.working_text.focus_set()
+        return
+    self._working_copy_name = ""
     tasks = self.store.tasks(self.key)
     fallback = self.store.compose(self.key, rows=tasks) if tasks else ""
     content = read_working_document(self.store, self.key, fallback)
+    with self.store.conn() as conn:
+        self._working_mode = conn.execute("SELECT mode FROM studio_working_docs WHERE doc=?", (self.key,)).fetchone()[0]
+        if self._working_mode in ("import-table", "import-tasks"):
+            separate_legacy_import(conn, self.key, content)
+            self._working_mode = "manual"
+            content = ""
     # Earlier versions stored a whole task summary as the editable fallback.
     # Replace it only when its full text matches a generated summary.
     legacy_summary = False
@@ -847,10 +1116,7 @@ def load_working_document(self):
             ).fetchone() is not None
     set_working_text(self, "" if legacy_summary else content)
     self._working_saved_key = self.key
-    with self.store.conn() as conn:
-        self._working_mode = conn.execute(
-            "SELECT mode FROM studio_working_docs WHERE doc=?", (self.key,)
-        ).fetchone()[0]
+    refresh_working_views(self)
     sync_working_tasks(self, tasks)
     self._working_dirty |= legacy_summary
     self.working_hint.configure(text="改状态或删除编号行可同步任务，右键可新增。")
@@ -867,11 +1133,21 @@ def save_working_document(self, silent=False):
         content = self.working_text.get("1.0", TASK_START_MARK) + self.working_text.get(TASK_END_MARK, "end-1c")
     else:
         content = self.working_text.get("1.0", "end-1c")
-    write_working_document(self.store, self.key, content, getattr(self, "_working_mode", "manual"))
+    tasks_changed = False
+    if self._working_copy_id is None:
+        write_working_document(self.store, self.key, content, self._working_mode)
+    else:
+        with self.s.connect() as conn:
+            write_import_copy(conn, self.key, self._working_copy_id, self._working_copy_name, content)
+            tasks_changed = sync_import_tasks(conn, self.key, self._working_copy_id, content)
     self._working_dirty = False
     self._working_saved_key = self.key
-    if not silent and hasattr(self, "status"):
-        self.status.set("工作文档已保存；原始资料未被修改。")
+    if tasks_changed:
+        self.store.snapshot(self.key)
+        self.refresh_tasks()
+        self.refresh_progress()
+    if not silent:
+        self.status.set("导入副本已保存。" if self._working_copy_id is not None else "工作文档已保存。")
     return True
 
 
@@ -900,10 +1176,11 @@ def load_doc(self, key):
     self.keep_draft()
     if key == self.key:
         self.refresh_task_selectors(key)
-        self.load_working_document()
+        refresh_working_views(self)
         self.refresh_tasks()
         return
     self.key = key
+    self._working_copy_id = None
     self.rid = None
     self._task_focus_id = None
     self.checked_ids.clear()
@@ -962,8 +1239,7 @@ def clear_task_document(self, message="尚未选择文档。"):
     self.checked_ids.clear()
     self.visible_ids = []
     self.list.delete(*self.list.get_children())
-    self._working_saved_key = None
-    set_working_text(self, "")
+    self.load_working_document()
     self.tasks_context.configure(text=message)
     self.working_hint.configure(text=message)
     self.refresh_task_detail()
@@ -1279,8 +1555,15 @@ def edit_working_table(self):
     flush_working_task_edits(self)
     from reqdoc_source_table import tables_in, replace_table
 
-    original = TASK_BLOCK.sub("", self.working_text.get("1.0", "end-1c"))
+    text = self.working_text
+    original = text.get("1.0", "end-1c")
     tables = tables_in(original)
+    if self._working_synced_block:
+        tables = [
+            table for table in tables
+            if text.compare(f"{table.end_line + 1}.0", "<=", TASK_START_MARK)
+            or text.compare(f"{table.start_line + 1}.0", ">=", TASK_END_MARK)
+        ]
     if not tables:
         raise ValueError("当前工作文档中没有识别到 Markdown 表格。")
     if len(tables) > 1:
@@ -1339,8 +1622,13 @@ def edit_working_table(self):
     def save():
         rows = [list(grid.item(iid, "values")) for iid in grid.get_children()]
         updated = replace_table(original, table, list(table.headers), rows)
-        set_working_text(self, updated)
-        sync_working_tasks(self, self.store.tasks(self.key))
+        lines = original.splitlines(keepends=True)
+        prefix_length = sum(map(len, lines[:table.start_line]))
+        suffix_length = sum(map(len, lines[table.end_line:]))
+        end = f"{table.end_line + 1}.0" if suffix_length else "end-1c"
+        text.edit_separator()
+        text.replace(f"{table.start_line + 1}.0", end, updated[prefix_length:len(updated)-suffix_length])
+        text.edit_separator()
         self._working_dirty = True
         self.save_working_document(silent=True)
         win.destroy()
@@ -1391,7 +1679,9 @@ def paste_working_image(self, silent=False):
         if not (base / relative).is_file():
             write_atomic(base / relative, raw)
         links.append(f"![{alt}]({relative})")
+    self.working_text.edit_separator()
     self.working_text.insert(index, "\n" + "\n".join(links) + "\n")
+    self.working_text.edit_separator()
     self._working_dirty = True
     self.working_text.focus_set()
     self.status.set("已将剪贴板图片插入工作文档。")
@@ -1413,7 +1703,8 @@ def working_export_content(self):
 
 def export_working_document(self, kind):
     self.require_doc()
-    return self.export(kind, content=working_export_content(self))
+    name = Path(self._working_copy_name).stem if self._working_copy_id is not None else None
+    return self.export(kind, content=working_export_content(self), name=name)
 
 
 def preview_working_document(self):
@@ -1442,18 +1733,34 @@ def convert_working_document(self):
         raise ValueError("没有识别到可转换的任务内容。")
     if len(rows) > 500:
         raise ValueError("一次最多转换 500 条任务，请先缩小内容范围。")
+    copy_id = self._working_copy_id
+    pending = list(enumerate(rows))
+    if copy_id is not None:
+        with self.store.conn() as conn:
+            link_existing_copy_tasks(conn, self.key, copy_id, rows)
+            matched = match_import_task_links(import_task_links(conn, self.key, copy_id), rows)
+        pending = [(position, row) for position, row in pending if position not in matched]
+        if not pending:
+            self.status.set("此副本中的任务已关联，保存副本时会同步修改。")
+            return
+    label = "导入副本" if copy_id is not None else "工作文档"
+    detail = "保存此副本时会同步对应任务。" if copy_id is not None else "重复转换会产生重复任务。"
     if not messagebox.askyesno(
-        "工作文档转换为任务",
-        f"将从当前工作文档生成 {len(rows)} 条任务。\n工作文档和原始资料都会保留；重复转换会产生重复任务。\n\n是否继续？",
+        "转换为任务",
+        f"将从当前{label}生成 {len(pending)} 条任务。\n{detail}\n\n是否继续？",
         parent=self,
     ):
         return
-    self.s.commit_task_rows(self.key, rows)
+    if copy_id is None:
+        self.s.commit_task_rows(self.key, rows)
+    else:
+        with self.s.connect() as conn:
+            add_import_tasks(self.s, conn, self.key, copy_id, pending)
     self.store.snapshot(self.key)
     self.refresh_tasks()
     self.refresh_progress()
     self.refresh_home()
-    self.status.set(f"已从工作文档生成 {len(rows)} 条任务；工作文档仍可继续编辑。")
+    self.status.set(f"已从{label}生成 {len(pending)} 条任务。")
 
 
 def import_dialog(self):
@@ -1493,7 +1800,7 @@ def import_paths(self, paths):
     if not prepared:
         raise ValueError("没有可导入的资料。")
     win = tk.Toplevel(self)
-    win.title("导入文件：形成工作文档或任务")
+    win.title("导入文件：创建独立副本")
     self.sized_dialog(win, 900, 680)
     win.transient(self)
     win.grab_set()
@@ -1505,15 +1812,13 @@ def import_paths(self, paths):
     ttk.Label(root, text="选择导入后的处理方式：", foreground="#64748B").pack(anchor="w", pady=(8, 3))
     mode_var = tk.StringVar(value="table")
     ttk.Radiobutton(
-        root, text="形成可编辑表格 / 文档（不自动生成任务）",
+        root, text="为每个文件创建可编辑副本",
         variable=mode_var, value="table",
     ).pack(anchor="w")
     ttk.Radiobutton(
-        root, text="形成任务（同时生成并保留可编辑工作文档）",
+        root, text="创建独立副本并生成任务",
         variable=mode_var, value="tasks",
     ).pack(anchor="w")
-    append_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(root, text="追加到当前工作文档末尾（不勾选则替换工作文档内容）", variable=append_var).pack(anchor="w", pady=(5, 7))
     ttk.Label(
         root,
         text="导入文件：" + "、".join(path.name for path, _ in prepared[:8]) + (" 等" if len(prepared) > 8 else ""),
@@ -1524,39 +1829,34 @@ def import_paths(self, paths):
         if as_tasks:
             estimated = sum(len(document_to_task_items(text)) for _, text in prepared)
             if not estimated:
-                raise ValueError("没有识别到可转换的内容。可选择先导入为工作文档。")
+                raise ValueError("没有识别到可转换的内容。可选择只创建导入副本。")
             if estimated > 500:
                 raise ValueError("一次导入最多生成 500 条任务，请先缩小文件范围。")
         all_warnings = []
-        mode = "import-tasks" if as_tasks else "import-table"
+        self.keep_draft()
         with ExitStack() as rollback:
             with self.s.connect() as connection:
                 archived_docs = []
                 for path, _ in prepared:
-                    notes, archived_text = self.store.archive_source(
-                        self.key, path, connection=connection, rollback=rollback
+                    notes, archived_text, copy_id = self.store.archive_source(
+                        self.key, path, connection=connection, rollback=rollback, include_id=True
                     )
                     all_warnings.extend(f"{path.name}：{note}" for note in notes)
-                    archived_docs.append((path, archived_text))
-                imported = "\n\n".join(
-                    f"# {path.stem}\n\n{text}" if len(archived_docs) > 1 else text
-                    for path, text in archived_docs
-                )
-                old = TASK_BLOCK.sub("", self.working_text.get("1.0", "end-1c"))
-                content = (old.rstrip() + "\n\n---\n\n" + imported) if append_var.get() and old.strip() else imported
-                rows = [row for _, text in archived_docs for row in document_to_task_items(text)] if as_tasks else []
-                if as_tasks and not rows:
-                    raise ValueError("没有识别到可转换的内容。可选择先导入为工作文档。")
-                if len(rows) > 500:
+                    write_import_copy(connection, self.key, copy_id, path.name, archived_text)
+                    archived_docs.append((copy_id, archived_text))
+                task_batches = [(copy_id, document_to_task_items(text)) for copy_id, text in archived_docs] if as_tasks else []
+                task_count = sum(len(items) for _, items in task_batches)
+                if as_tasks and not task_count:
+                    raise ValueError("没有识别到可转换的内容。可选择只创建导入副本。")
+                if task_count > 500:
                     raise ValueError("一次导入最多生成 500 条任务，请分批导入。")
-                write_working_document(self.store, self.key, content, mode, connection=connection)
-                if rows:
-                    self.s.commit_task_rows(self.key, rows, connection=connection)
+                for copy_id, items in task_batches:
+                    add_import_tasks(self.s, connection, self.key, copy_id, list(enumerate(items)))
             rollback.pop_all()
-        self._working_mode = mode
-        set_working_text(self, content)
+        self._working_copy_id = archived_docs[0][0]
+        self.load_working_document()
         win.destroy()
-        if rows:
+        if task_count:
             self.store.snapshot(self.key)
         self.refresh_tasks()
         self.refresh_progress()
@@ -1565,8 +1865,8 @@ def import_paths(self, paths):
         self.refresh_export_page()
         self.show_page("tasks")
         self.status.set(
-            f"已归档 {len(archived_docs)} 份原始文件；工作文档已独立生成。"
-            + (f" 并生成 {len(rows)} 条任务。" if as_tasks else " 当前为可编辑表格/文档模式。")
+            f"已创建 {len(archived_docs)} 份独立导入副本。"
+            + (f"已生成 {task_count} 条任务。" if as_tasks else "")
         )
         if all_warnings:
             messagebox.showwarning("导入提示", "\n".join(all_warnings[:30]), parent=self)
@@ -1636,22 +1936,17 @@ def refresh_progress_tasks(self):
     selected = self.progress_chapters.selection()
     group = self.progress_group_map.get(selected[0]) if selected else None
     self.progress_task_doc_map = {}
-    lines = []
+    entries = []
     if group:
         for project, name, key, row in group["items"]:
-            lines.extend([
-                f"{row.title}",
-                f"所属项目：{project}    所属文档：{name}",
+            entries.append((
+                row.title,
+                f"所属项目：{project}    所属文档：{name}\n"
                 f"章节：{row.section or '未分类'}    状态：{'已完成' if row.done else '未完成'}    任务编号：{row.id}",
                 row.content.strip(),
-                "─" * 56,
-                "",
-            ])
+            ))
             self.progress_task_doc_map[row.id] = key
-    self.progress_detail.configure(state="normal")
-    self.progress_detail.delete("1.0", "end")
-    self.progress_detail.insert("1.0", "\n".join(lines) if lines else "当前分组没有任务。")
-    self.progress_detail.configure(state="disabled")
+    render_task_details(self.progress_detail, entries, "当前分组没有任务。", 56)
 
 
 def edit_progress_task(self, event=None):
@@ -1722,10 +2017,10 @@ def help_text(self):
         f"ReqDoc Studio V{VERSION} 使用说明",
         """【两种文档工作流程】
 1. 手动输入：打开任务处理，在左侧工作文档直接输入、编辑文字、Markdown 表格和图片；保存后点击“转成任务”。
-2. 导入文件：选择 Word、Markdown 或 TXT；导入时选择“形成可编辑表格/文档”或“形成任务”。两种方式都会把原始文件只读归档，并生成独立工作文档。
+2. 导入文件：选择 Word、Markdown 或 TXT。每个文件都会生成独立副本，可同时生成任务。在“显示文档”下拉框按文件名切换。
 
 【工作文档与源文件】
-工作文档是独立编辑副本，保存在本机数据库中。Markdown 表格可通过“编辑表格”双击单元格修改。复制图片后，将光标放在正文中，按 Ctrl+V 或点击“粘贴图片”。图片描述可留空，插入后会显示缩略图。“导出文档”可预览内容，或导出 Word 和 Markdown 图片包。
+工作文档和各导入副本分别编辑和保存。Markdown 表格可通过“编辑表格”双击单元格修改。复制图片后，将光标放在正文中，按 Ctrl+V 或点击“粘贴图片”。图片描述可留空，插入后会显示缩略图。“导出文档”预览或导出当前显示的内容。
 
 【任务处理】
 左右两侧的任务状态会同步。在工作文档中把编号行的状态改成“完成”或“未完成”，右侧会更新。删除编号行会直接删除任务。在文档中右键可新增任务；在某条任务上右键时，新任务插在它后面。右侧下方的任务明细可框选和复制。

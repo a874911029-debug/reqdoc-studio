@@ -426,7 +426,7 @@ class Store:
             conn.executemany('INSERT OR REPLACE INTO studio_order(id,position) VALUES(?,?)',
                              [(rid,i*1000) for i,rid in enumerate(order)])
 
-    def archive_source(self,key,path,*,connection=None,rollback=None):
+    def archive_source(self,key,path,*,connection=None,rollback=None,include_id=False):
         """Archive one original and return its document-relative extracted text."""
         path=Path(path);sid=uuid.uuid4().hex
         base=self.service.document_folder(key)
@@ -452,7 +452,7 @@ class Store:
                 text=re.sub(r'!\[([^\]]*)\]\(([^)]+)\)',image_copy,text)
             with (self.conn() if connection is None else nullcontext(connection)) as c:
                 c.execute('INSERT INTO studio_sources VALUES(?,?,?,?,?,?)',(sid,key,path.name,str(target.relative_to(self.settings.docs_dir)),text,stamp()))
-            return warnings,text
+            return (warnings,text,sid) if include_id else (warnings,text)
         except Exception:
             shutil.rmtree(folder,ignore_errors=True)
             raise
@@ -826,10 +826,10 @@ class Studio(tk.Tk):
         if not self.key:return
         if self.tabs.select()==str(self.previewtab):self.guard(self.refresh_preview)
         if self.tabs.select()==str(self.historytab):self.guard(self.refresh_history)
-    def export(self,kind,content=None):
+    def export(self,kind,content=None,*,name=None):
         self.require_doc();self.keep_draft();self.persist_notes()
         if self.dirty and not messagebox.askyesno('有未保存的任务草稿','汇总仅包含已保存任务。仍导出当前已保存内容吗？',parent=self):return
-        name=self.s.document(self.key).file_stem or '汇总文档'
+        name=name or self.s.document(self.key).file_stem or '汇总文档'
         path=filedialog.asksaveasfilename(parent=self,initialfile=name+'.'+kind,defaultextension='.'+kind,filetypes=[('Word' if kind=='docx' else 'Markdown 与图片包','*.'+kind)])
         if not path:return
         if content is None:content=self.store.compose(self.key,self.onlyopen.get())

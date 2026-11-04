@@ -13,9 +13,11 @@ from docx import Document
 from PIL import Image
 
 from reqdoc.config import Settings
+from reqdoc.gui.widgets import MarkdownView
 from reqdoc_studio import CompactStudio, Store
 from reqdoc_working_document import (
     TASK_BLOCK_START,
+    MAIN_DOCUMENT_LABEL,
     document_to_task_items,
     install,
     read_working_document,
@@ -191,6 +193,111 @@ class FeedbackTests(unittest.TestCase):
         self.assertFalse(text.image_names())
         self.assertNotIn("assets/working/", text.get("1.0", "end-1c"))
 
+    def test_document_titles_and_task_details_have_distinct_visual_styles(self):
+        self.app.show_page("tasks")
+        source = "# 文档标题\n## 章节\n### 任务标题\n正文\n> #42 · 未完成\n```\n# 代码\n```"
+        text = self.app.working_text
+        text.insert("1.0", source)
+        self.app.update()
+        for line, tag in [(1, "document_heading_1"), (2, "document_heading_2"),
+                          (3, "document_heading_3"), (5, "document_metadata")]:
+            self.assertIn(tag, text.tag_names(f"{line}.0"))
+        self.assertNotIn("document_heading_1", text.tag_names("7.0"))
+        self.assertEqual(text.get("1.0", "end-1c"), source)
+        heading_font = text.tk.splitlist(text.tag_cget("document_heading_1", "font"))
+        task_font = text.tk.splitlist(text.tag_cget("document_heading_3", "font"))
+        self.assertGreater(int(heading_font[1]), int(task_font[1]))
+        self.assertEqual(task_font[2], "bold")
+        preview = self.app.preview_working_document()
+        self.addCleanup(preview.destroy)
+        self.assertIn("document_heading_2", next(widgets(preview, MarkdownView)).text.tag_names("2.0"))
+        task = self.store.save_task(self.doc.key, "已选任务", "分组", "任务详情")
+        self.app.refresh_tasks()
+        self.app.list.selection_set(str(task.id))
+        self.app.on_task_selected()
+        detail = self.app.task_detail
+        self.assertIn("detail_title", detail.tag_names("1.0"))
+        self.assertIn("detail_metadata", detail.tag_names("2.0"))
+        self.assertNotIn("detail_metadata", detail.tag_names("4.0"))
+
+    def select_working_view(self, label):
+        self.app.working_view_var.set(label)
+        self.app.working_view_box.event_generate("<<ComboboxSelected>>")
+        self.app.update()
+
+    def test_imported_copies_switch_separately_and_sync_associated_tasks(self):
+        first_file, second_file = self.root / "资料甲.md", self.root / "资料乙.md"
+        first_file.write_text("# 甲任务\n\n原始详情", encoding="utf-8")
+        second_file.write_text("# 乙任务\n\n第二份内容", encoding="utf-8")
+        text = self.app.working_text
+        text.insert("1.0", "工作文档正文")
+        dialog = self.app.import_paths([first_file, second_file])
+        self.button(dialog, "确认导入").invoke()
+        self.assertEqual(text.get("1.0", "end-1c"), first_file.read_text("utf-8"))
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
+            self.app.convert_working_document()
+            self.app.convert_working_document()
+        task, = self.store.tasks(self.doc.key)
+        self.store.service.set_done(task.id, True)
+        text.replace("3.0", "end-1c", "更新后的详情")
+        self.app.save_working_document()
+        updated = self.store.service.get_requirement(task.id)
+        self.assertEqual(updated.content, "更新后的详情")
+        self.assertTrue(updated.done)
+        self.assertNotIn(TASK_BLOCK_START, text.get("1.0", "end-1c"))
+        text.event_generate("<<Undo>>")
+        self.app.update()
+        self.app.save_working_document()
+        self.assertEqual(self.store.service.get_requirement(task.id).content, "原始详情")
+        self.select_working_view("副本 · 资料乙.md")
+        self.assertEqual(text.get("1.0", "end-1c"), second_file.read_text("utf-8"))
+        self.select_working_view(MAIN_DOCUMENT_LABEL)
+        working = text.get("1.0", "end-1c")
+        self.assertTrue(working.startswith("工作文档正文"))
+        self.assertIn(f"> #{task.id} · 已完成", working)
+        self.assertNotIn("第二份内容", working)
+        self.assertEqual(first_file.read_text("utf-8"), "# 甲任务\n\n原始详情")
+
+    def test_existing_edited_import_is_preserved_as_a_copy(self):
+        source = self.root / "旧资料.md"
+        source.write_text("# 任务甲\n\n原文", encoding="utf-8")
+        self.store.archive_source(self.doc.key, source)
+        task_id, = self.store.service.commit_task_rows(
+            self.doc.key, [{"title": "任务甲", "section": "任务甲", "content": "原文"}]
+        )
+        write_working_document(self.store, self.doc.key, "# 任务甲\n\n旧版编辑", "import-table")
+        self.app.load_working_document()
+        self.app.show_page("tasks")
+        self.assertNotIn("旧版编辑", self.app.working_text.get("1.0", "end-1c"))
+        self.select_working_view("副本 · 旧资料.md")
+        self.assertIn("旧版编辑", self.app.working_text.get("1.0", "end-1c"))
+        self.app.save_working_document()
+        self.assertEqual(self.store.service.get_requirement(task_id).content, "旧版编辑")
+
+    def test_undo_restores_table_edit_and_pasted_image(self):
+        self.app.show_page("tasks")
+        text = self.app.working_text
+        table = "| 名称 | 内容 |\n| --- | --- |\n| 原值 | 文本 |"
+        text.insert("1.0", table)
+        dialog = self.app.edit_working_table()
+        grid = next(widgets(dialog, ttk.Treeview))
+        grid.item("0", values=("修改值", "文本"))
+        self.button(dialog, "保存表格修改").invoke()
+        self.assertIn("修改值", text.get("1.0", "end-1c"))
+        text.event_generate("<<Undo>>")
+        self.app.update()
+        self.assertEqual(text.get("1.0", "end-1c"), table)
+        text.mark_set("insert", "end-1c")
+        with patch("PIL.ImageGrab.grabclipboard", return_value=Image.new("RGB", (20, 20), "blue")), \
+                patch("reqdoc_working_document.simpledialog.askstring", return_value=""):
+            self.app.paste_working_image()
+        self.app.update()
+        self.assertEqual(len(text.image_names()), 1)
+        text.event_generate("<<Undo>>")
+        self.app.update()
+        self.assertEqual(text.get("1.0", "end-1c"), table)
+        self.assertFalse(text.image_names())
+
     def test_delete_tasks_removes_selected_records_directly(self):
         first = self.store.save_task(self.doc.key, "待删除任务", "章节", "删除的内容")
         kept = self.store.save_task(self.doc.key, "保留任务", "章节", "保留的内容")
@@ -342,7 +449,7 @@ class FeedbackTests(unittest.TestCase):
                 patch("reqdoc_working_document.messagebox.showwarning"):
             self.app.show_page("tasks")
             self.button(self.app.pages["tasks"], "导入文档").invoke()
-            win = next(w for w in widgets(self.app, tk.Toplevel) if w.wm_title() == "导入文件：形成工作文档或任务")
+            win = next(w for w in widgets(self.app, tk.Toplevel) if w.wm_title() == "导入文件：创建独立副本")
             self.button(win, "确认导入").invoke()
         with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
             self.button(self.app.pages["tasks"], "转成任务").invoke()

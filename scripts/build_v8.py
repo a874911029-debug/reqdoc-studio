@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "删除项目时直接删除所选项目及其文档和任务，移除自动完整备份及备份路径提示。",
+                "notes": "导入文件各自生成可切换的副本，保存会同步已转换的任务。文档支持 Ctrl+Z 撤销和标题分级显示。包含删除项目时移除自动完整备份的修复。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")
