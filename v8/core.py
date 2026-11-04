@@ -9,6 +9,7 @@ import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from contextlib import contextmanager, closing
 
 VERSION = "8.0.0"
 APP_NAME = "ReqDocStudio"
@@ -180,11 +181,19 @@ class Store:
                 );
             """)
 
+    @contextmanager
     def connect(self):
         con = sqlite3.connect(str(self.db), timeout=10)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON")
-        return con
+        try:
+            yield con
+            con.commit()
+        except BaseException:
+            con.rollback()
+            raise
+        finally:
+            con.close()
 
     def projects(self):
         with self.connect() as c:
@@ -297,6 +306,7 @@ class Store:
         if project not in {p["id"] for p in self.projects()}:
             raise ValueError("目标项目不存在。")
         src_project = row["project_id"]
+        previous_ids = [d["id"] for d in self.documents(src_project) if d["id"] != source]
         ids = [d["id"] for d in self.documents(project) if d["id"] != source]
         if target is not None and target not in ids:
             raise ValueError("目标文档不属于该项目。")
@@ -307,8 +317,8 @@ class Store:
             for i, ident in enumerate(ids):
                 c.execute("UPDATE documents SET position=? WHERE id=?", (i, ident))
             if project != src_project:
-                for i, doc in enumerate(self.documents(src_project)):
-                    c.execute("UPDATE documents SET position=? WHERE id=?", (i, doc["id"]))
+                for i, ident in enumerate(previous_ids):
+                    c.execute("UPDATE documents SET position=? WHERE id=?", (i, ident))
             c.commit()
 
     def backup(self, destination: Path):
@@ -318,8 +328,9 @@ class Store:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp_db = self.root.parent / ("reqdoc-backup-" + uuid.uuid4().hex + ".db")
         try:
-            with self.connect() as original, sqlite3.connect(temp_db) as snapshot:
+            with self.connect() as original, closing(sqlite3.connect(temp_db)) as snapshot:
                 original.backup(snapshot)
+                snapshot.commit()
             with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.write(temp_db, "workspace.db")
                 docs = self.root / "documents"
