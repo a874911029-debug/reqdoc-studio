@@ -115,11 +115,15 @@ class PreservedUiTests(unittest.TestCase):
         app = CompactStudio(self.store)
         app.withdraw()
         self.addCleanup(_safe_destroy, app)
-        app._refresh_source_table("| 名称 | 状态 |\\n| --- | --- |\\n| 资料 A | 已整理 |")
+        app._refresh_source_table("""| 名称 | 状态 |
+| --- | --- |
+| 资料 A | 已整理 |""")
         self.assertEqual(tuple(app.task_table_grid["columns"]), ("col0", "col1"))
         app._refresh_source_table("没有表格的普通文本")
         self.assertEqual(tuple(app.task_table_grid["columns"]), ())
-        app._refresh_source_table("| 标题 | 章节 | 备注 |\\n| --- | --- | --- |\\n| 任务 A | 场景 | 说明 |")
+        app._refresh_source_table("""| 标题 | 章节 | 备注 |
+| --- | --- | --- |
+| 任务 A | 场景 | 说明 |""")
         self.assertEqual(tuple(app.task_table_grid["columns"]), ("col0", "col1", "col2"))
 
     def test_document_preview_and_task_editor_are_visible_together(self):
