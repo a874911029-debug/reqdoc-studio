@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.12",
+  "version": "8.0.13",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.12-win64.zip",
-    "size": 24732307,
-    "sha256": "a00844bd0be7d859b5e5f04475fdb2c6ae992015f3a857c59e09d109e46a9343"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.13-win64.zip",
+    "size": 24739224,
+    "sha256": "ed2fca49c8522317c3094bfdd1d6c005c8130ebd023edebe3913ad1e41e4b160"
   },
-  "notes": "删除项目时直接删除所选项目及其文档和任务，移除自动完整备份及备份路径提示。",
-  "source_commit": "c0746d631d109f77f261e9861347384683dd4a6e"
+  "notes": "导入文件各自生成可切换的副本，保存会同步已转换的任务。文档支持 Ctrl+Z 撤销和标题分级显示。包含删除项目时移除自动完整备份的修复。",
+  "source_commit": "aa619ccbe4493fcf29d9c1e645ea550680d812a7"
 }
