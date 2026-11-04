@@ -115,7 +115,7 @@ def table_to_task_items(table: PipeTable, source_path: str, source_name: str,
         'section', 'task section', 'category', 'task category', 'group',
     }
     section_col=next((i for i,h in enumerate(table.headers)
-                      if re.sub(r'\s+,' ',str(h).strip().lower()) in section_headers),None)
+                      if re.sub(r'\s+',' ',str(h).strip().lower()) in section_headers),None)
     rows=[]
     for row_index,values in enumerate(table.rows):
         title=values[index].strip()
