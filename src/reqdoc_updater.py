@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import zipfile
 
-APP_VERSION = "7.5.3"
+APP_VERSION = "7.5.4"
 PUBLIC_OWNER = "a874911029-debug"
 UPDATE_REPO = "reqdoc-studio"
 UPDATE_BRANCH = "updates"
@@ -27,17 +27,28 @@ PACKAGE_BASE_URL = (
     f"{UPDATE_BRANCH}/"
 )
 
-MAX_ZIP_BYTES = 2 * 1024 * 1024
-MAX_FILES = 3
-MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024
-MAX_ENTRY_BYTES = 1024 * 1024
+MAX_ZIP_BYTES = 4 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024
+MAX_ENTRY_BYTES = 4 * 1024 * 1024
 
-ALLOWED_FILES = {
+UPDATER_FILES = frozenset({
     "_internal/reqdoc_updater.py",
     "updater.ps1",
     "version.json",
+})
+MODULE_FILES = frozenset({
+    "_internal/reqdoc_studio.py",
+    "_internal/reqdoc_source_table.py",
+    "_internal/reqdoc_source_editor.py",
+    "_internal/reqdoc_win_drop.py",
+    "_internal/reqdoc_table_clipboard.py",
+})
+PACKAGE_FILES = {
+    "updater-bootstrap": UPDATER_FILES,
+    "module-patch": UPDATER_FILES | MODULE_FILES,
 }
-REQUIRED_FILES = set(ALLOWED_FILES)
+ALLOWED_FILES = PACKAGE_FILES["module-patch"]
+MAX_FILES = len(ALLOWED_FILES)
 
 
 class UpdateError(RuntimeError):
@@ -127,15 +138,15 @@ def update_available(manifest: dict, current_version: str = APP_VERSION) -> bool
 
 
 def validate_zip(zip_path: Path, expected_version: str | None = None) -> None:
-    """Validate an updater-only patch; executable and user data are never accepted."""
+    """Allow exact updater/bootstrap or module payloads, never executables or user data."""
     try:
         archive = zipfile.ZipFile(zip_path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise UpdateError("更新包不是有效的 ZIP 文件。") from exc
     with archive as z:
         infos = z.infolist()
-        if len(infos) != MAX_FILES:
-            raise UpdateError("增量更新包必须且只能包含三个文件。")
+        if len(infos) not in {len(files) for files in PACKAGE_FILES.values()}:
+            raise UpdateError("增量更新包的文件数量与支持的包类型不匹配。")
         seen: set[str] = set()
         present: set[str] = set()
         total_uncompressed = 0
@@ -173,21 +184,34 @@ def validate_zip(zip_path: Path, expected_version: str | None = None) -> None:
             ):
                 raise UpdateError("更新包压缩比异常。")
             present.add(normalized)
-        missing = REQUIRED_FILES - present
-        if missing:
-            raise UpdateError("更新包缺少必要文件：" + "、".join(sorted(missing)))
+        if "version.json" not in present:
+            raise UpdateError("增量更新包缺少 version.json。")
         try:
             metadata = json.loads(z.read("version.json").decode("utf-8"))
         except (KeyError, UnicodeError, ValueError) as exc:
             raise UpdateError("更新包版本信息无法读取。") from exc
+        if not isinstance(metadata, dict):
+            raise UpdateError("更新包版本信息必须是 JSON 对象。")
+        package_type = metadata.get("package_type")
+        required = PACKAGE_FILES.get(package_type) if isinstance(package_type, str) else None
+        if required is None:
+            raise UpdateError("不支持的更新包类型。")
+        if present != required:
+            missing = required - present
+            unexpected = present - required
+            raise UpdateError(
+                "更新包文件清单与包类型不匹配；缺少："
+                + "、".join(sorted(missing))
+                + "；额外："
+                + "、".join(sorted(unexpected))
+            )
         package_version = metadata.get("version")
         version_tuple(package_version)
         if expected_version and package_version != expected_version:
             raise UpdateError("更新包内部版本与更新清单不一致。")
         if metadata.get("name") != "ReqDoc" or metadata.get("feed") != FEED_URL:
             raise UpdateError("更新包的产品标识或更新通道不匹配。")
-        if metadata.get("package_type") != "updater-bootstrap":
-            raise UpdateError("当前通道只接受更新器迁移包。")
+        # Package files are checked against the exact, immutable type allowlist above.
         if z.testzip() is not None:
             raise UpdateError("更新包 CRC 校验失败。")
 
