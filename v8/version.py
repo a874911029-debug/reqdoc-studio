@@ -1,4 +1,3 @@
-VERSION = "8.0.3"
+VERSION = "8.0.4"
 PRODUCT_NAME = "ReqDoc Studio"
-# Release build includes the final CompactStudio shutdown callback guard.
-# V8.0.3 also verifies the full app lifecycle and update handoff.
+# V8.0.4 restores the simultaneous document-preview/task-editing workspace and fixes document lifecycle regressions.

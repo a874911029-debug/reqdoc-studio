@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "文档工作台 V8.0.3：修复关闭时的 Tk 定时回调竞态、异常弹窗二次崩溃，并修复独立更新器的异常退出回退。",
+                "notes": "文档工作台 V8.0.4：修复动态表格列、原始资料打开、新建与删除文档流程；恢复文档预览与任务编辑并排工作区；简化进度统计筛选。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")

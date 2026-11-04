@@ -15,7 +15,7 @@ from reqdoc.gui.theme import configure_theme
 from reqdoc.gui.widgets import MarkdownView
 from reqdoc_source_table import tables_in, is_task_table, table_to_task_items
 
-VERSION = 'ReqDoc Studio V8.0.3'
+VERSION = 'ReqDoc Studio V8.0.4'
 def stamp(): return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 def digest(data): return hashlib.sha256(data).hexdigest()
 def write_atomic(path, data):
@@ -339,13 +339,11 @@ class Store:
                 conn.execute('DELETE FROM studio_order WHERE id=?',(tid,))
 
     def delete_document_permanently(self,key):
-        """Backup first, then use the original service's explicit deletion API."""
-        doc=self.service.document(key)
+        """Delete one document without creating an implicit backup."""
         task_ids=[r.id for r in self.service.list_requirements(project=key)]
-        backup=self.backup()
         self.service.delete_document(key)
         self._cleanup_studio_refs([key],task_ids)
-        return backup
+        return None
 
     def delete_project_permanently(self,name):
         """Original service handles the project and all its member documents."""
@@ -782,8 +780,15 @@ class Studio(tk.Tk):
         if folder:
             out=self.store.restore_copy(archive,folder);messagebox.showinfo('已恢复为独立副本',str(out)+'\n\n当前工作数据未被覆盖。\n关闭程序后，把恢复副本中的 reqdoc-data 复制到一个新解压的测试版程序目录，再启动。',parent=self)
     def open_path(self,path):
-        if sys.platform=='win32':os.startfile(str(Path(path).resolve()))
-        else:self.status.set(str(Path(path).resolve()))
+        target=Path(path).expanduser()
+        try:resolved=target.resolve(strict=True)
+        except (OSError,RuntimeError) as exc:
+            raise FileNotFoundError('要打开的文件或目录不存在：'+str(target)) from exc
+        if sys.platform=='win32':
+            try:os.startfile(str(resolved))
+            except OSError as exc:
+                raise RuntimeError('Windows 无法打开该文件。请检查默认打开程序或文件权限：'+str(resolved)) from exc
+        else:self.status.set(str(resolved))
     def help(self):
         self.show_text('测试版使用说明','''1. 新建项目 → 新建文档 → 新增任务。编辑右侧标题、章节、正文，Ctrl+S 保存。
 2. 任务可多选标记完成、改章节、移入回收站；单选上移/下移调整汇总顺序。
@@ -1910,7 +1915,7 @@ class CompactStudio(CompactStudioV4):
         except Exception:pass
 
     def build(self):
-        self.title('文档工作台 · ReqDoc Studio V8.0.3')
+        self.title('文档工作台 · ReqDoc Studio V8.0.4')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
@@ -2068,24 +2073,21 @@ class CompactStudio(CompactStudioV4):
         self.task_document_box.bind('<<ComboboxSelected>>',self.on_task_document_selected)
         self.task_doc_map={};self._task_selector_loading=False;self._task_source_loading=False
         self.selected_source_id=None;self._task_sashes_initialized=False
-        self.editor_open=False;self.source_panel_visible=False
+        self.editor_open=True;self.source_panel_visible=True
         docactions=ttk.Frame(page);docactions.pack(fill='x',pady=(0,6))
         ttk.Button(docactions,text='导入资料',command=lambda:self.guard(self.import_dialog)).pack(side='left',padx=(0,6))
         ttk.Button(docactions,text='查看文档汇总',command=lambda:self.guard(self.show_preview)).pack(side='left',padx=(0,6))
-        self.source_toggle_button=ttk.Button(docactions,text='查看原始资料',command=lambda:self.guard(self.toggle_source_panel))
+        self.source_toggle_button=ttk.Button(docactions,text='隐藏文档预览',command=lambda:self.guard(self.toggle_source_panel))
         self.source_toggle_button.pack(side='left',padx=(0,6))
         docmenu=ttk.Menubutton(docactions,text='文档操作 ▾')
         menu=tk.Menu(docmenu,tearoff=False)
         menu.add_command(label='导出 Word',command=lambda:self.guard(lambda:self.export('docx')))
         menu.add_command(label='导出 Markdown 图片包',command=lambda:self.guard(lambda:self.export('zip')))
-        menu.add_separator()
-        menu.add_command(label='编辑文档说明',command=lambda:self.guard(lambda:self.open_aux(self.notetab)))
-        menu.add_command(label='管理归档资料',command=lambda:self.guard(lambda:self.open_aux(self.sourcetab)))
         docmenu['menu']=menu;docmenu.pack(side='left',padx=(0,6))
 
         self.tasks_split=ttk.Panedwindow(page,orient='horizontal')
         self.tasks_split.pack(fill='both',expand=True)
-        source_panel=ttk.LabelFrame(self.tasks_split,text='原始资料（只读参考）',padding=7);self.task_source_panel=source_panel
+        source_panel=ttk.LabelFrame(self.tasks_split,text='文档预览 / 原始资料（只读）',padding=7);self.task_source_panel=source_panel
         sourcebar=ttk.Frame(source_panel);sourcebar.pack(fill='x',pady=(0,6))
         self.task_source_var=tk.StringVar(value='')
         self.task_source_box=ttk.Combobox(sourcebar,textvariable=self.task_source_var,state='readonly')
@@ -2122,7 +2124,8 @@ class CompactStudio(CompactStudioV4):
         self.task_table_grid.bind('<Control-c>',lambda e:self.guard(lambda:self.copy_table_rows(self.task_table_grid)) or 'break')
         self.task_table_grid.bind('<Control-C>',lambda e:self.guard(lambda:self.copy_table_rows(self.task_table_grid)) or 'break')
         self.task_source_book.tab(self.task_table_page,state='disabled')
-        ttk.Label(source_panel,text='来源文件只读。请在任务列表中编辑整理结果；表格行可转换为独立任务。',foreground='#64748B',wraplength=520).pack(anchor='w',pady=(5,0))
+        ttk.Label(source_panel,text='原始资料只读保留；没有原始资料时显示当前文档汇总。',foreground='#64748B',wraplength=520).pack(anchor='w',pady=(5,0))
+        self.tasks_split.add(source_panel,weight=1)
 
         right=ttk.Frame(self.tasks_split);self.task_right_panel=right;self.tasks_split.add(right,weight=4)
         self.tasks_context=ttk.Label(right,text='尚未选择文档。请使用上方项目和文档选择器。',foreground='#64748B')
@@ -2140,9 +2143,10 @@ class CompactStudio(CompactStudioV4):
         primary=ttk.Frame(task_list_panel);primary.pack(fill='x',pady=(0,5))
         primary_items=[('＋ 新增任务',self.new_task),('选中后插入',self.insert_after_selected),
                        ('编辑任务',self.edit_selected),('添加图片',self.add_image),('粘贴图片',self.paste_image)]
-        for i,(label,action) in enumerate(primary_items):
-            ttk.Button(primary,text=label,command=lambda fn=action:self.guard(fn)).grid(row=i//3,column=i%3,sticky='ew',padx=2,pady=2)
-            primary.grid_columnconfigure(i%3,weight=1)
+        for start in (0,3):
+            row=ttk.Frame(primary);row.pack(fill='x',anchor='w')
+            for label,action in primary_items[start:start+3]:
+                ttk.Button(row,text=label,command=lambda fn=action:self.guard(fn)).pack(side='left',padx=(0,6),pady=2)
         listframe=ttk.Frame(task_list_panel);listframe.pack(fill='both',expand=True)
         self.list=ttk.Treeview(listframe,columns=('check','state','title','chapter'),show='headings',selectmode='extended')
         for col,label,width in [('check','选择',48),('state','状态',76),('title','任务标题',250),('chapter','所属章节',160)]:
@@ -2210,14 +2214,13 @@ class CompactStudio(CompactStudioV4):
         ttk.Button(editactions,text='插入图片',command=lambda:self.guard(self.add_image)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='粘贴图片',command=lambda:self.guard(self.paste_image)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='取消本次编辑',command=lambda:self.guard(self.cancel_edit)).pack(side='right')
-        # The ordinary state is the processed task list. Source material is opt-in.
-        task_split.forget(editor)
+        # Keep the editor visible beside the document preview and task list.
 
     def position_task_sashes(self):
         if self._task_sashes_initialized:return
         width=self.tasks_split.winfo_width();height=self.task_vertical_split.winfo_height()
         if width<=500:return
-        if self.source_panel_visible:self.tasks_split.sashpos(0,int(width*0.39))
+        if self.source_panel_visible:self.tasks_split.sashpos(0,int(width*0.32))
         if self.editor_open and height>300:self.task_vertical_split.sashpos(0,int(height*0.56))
         self._task_sashes_initialized=True
 
@@ -2244,13 +2247,14 @@ class CompactStudio(CompactStudioV4):
         if self.source_panel_visible:
             self.tasks_split.forget(self.task_source_panel)
             self.source_panel_visible=False
-            self.source_toggle_button.configure(text='查看原始资料')
+            self.source_toggle_button.configure(text='查看文档预览')
         else:
             self.tasks_split.insert(0,self.task_source_panel,weight=1)
             self.source_panel_visible=True
-            self.source_toggle_button.configure(text='隐藏原始资料')
-            # Reserve most of the width for the processed task workspace.
-            self._source_sash_after_id=self.after(80,lambda:self.tasks_split.sashpos(0,int(self.tasks_split.winfo_width()*0.28)))
+            self.source_toggle_button.configure(text='隐藏文档预览')
+            self._source_sash_after_id=self.after(
+                80,lambda:self.tasks_split.sashpos(0,int(self.tasks_split.winfo_width()*0.32))
+            )
 
     def new_task(self):
         self.require_doc()
@@ -2483,8 +2487,16 @@ class CompactStudio(CompactStudioV4):
     def refresh_task_source(self):
         if not hasattr(self,'task_source_view'):return
         if not self.key:
+            self._task_source_loading=True
+            self.selected_source_id=None;self.task_source_map={}
             self.task_source_var.set('');self.task_source_box.configure(values=[])
-            self.task_source_meta.configure(text='请先选择项目和文档。');self.task_source_view.set_markdown('请先选择项目和文档。')
+            self.task_source_meta.configure(text='请先选择项目和文档。')
+            self.task_source_view.set_markdown('请先选择项目和文档。')
+            self.task_source_open.configure(state='disabled')
+            self.task_source_edit.configure(state='disabled')
+            self.task_table_to_tasks_button.configure(state='disabled')
+            self._refresh_source_table('')
+            self._task_source_loading=False
             return
         sources=self.store.sources(self.key);self._task_source_loading=True;self.task_source_map={}
         if sources:
@@ -2514,8 +2526,10 @@ class CompactStudio(CompactStudioV4):
         from reqdoc_source_table import tables_in
         old_tab=self.task_source_book.select()
         blocks=tables_in(content)
-        grid=self.task_table_grid;grid.delete(*grid.get_children())
+        grid=self.task_table_grid
+        grid.delete(*grid.get_children())
         if not blocks:
+            grid.configure(displaycolumns=())
             grid.configure(columns=())
             self.task_source_book.tab(self.task_table_page,state='disabled')
             self.task_table_to_tasks_button.configure(state='disabled')
@@ -2523,14 +2537,18 @@ class CompactStudio(CompactStudioV4):
             return
         table=blocks[0]
         cols=['col'+str(i) for i in range(len(table.headers))]
-        grid.configure(columns=cols,displaycolumns=cols)
+        grid.configure(displaycolumns=())
+        grid.configure(columns=cols)
+        grid.configure(displaycolumns=cols)
         for column,header in zip(cols,table.headers):
             grid.heading(column,text=header)
             grid.column(column,width=max(145,min(280,len(header)*16)),minwidth=95,stretch=True)
-        for i,row in enumerate(table.rows):grid.insert('','end',iid=str(i),values=row)
+        for i,row in enumerate(table.rows):
+            grid.insert('','end',iid=str(i),values=row)
         self.task_source_book.tab(self.task_table_page,state='normal')
         self.task_table_to_tasks_button.configure(state='normal' if self.selected_source_id else 'disabled')
-        if old_tab==str(self.task_table_page):self.task_source_book.select(self.task_table_page)
+        if old_tab==str(self.task_table_page):
+            self.task_source_book.select(self.task_table_page)
         elif self.selected_source_id and not getattr(self,'_auto_table_seen',{}).get(self.selected_source_id):
             self.task_source_book.select(self.task_table_page)
             if not hasattr(self,'_auto_table_seen'):self._auto_table_seen={}
@@ -2602,11 +2620,25 @@ class CompactStudio(CompactStudioV4):
         self.selected_source_id=self.task_source_map.get(self.task_source_var.get())
         self.refresh_task_source()
 
+    def archived_source_path(self,stored):
+        root=Path(self.store.settings.docs_dir).resolve()
+        raw=Path(str(stored)).expanduser()
+        target=(raw if raw.is_absolute() else root/raw).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError('原始资料路径不在当前文档归档目录内，已阻止打开。') from exc
+        if not target.is_file():
+            raise FileNotFoundError('原始资料文件不存在或已移动：'+str(target))
+        return target
+
     def open_task_source(self):
-        if not self.key or not self.selected_source_id:raise ValueError('当前文档没有可打开的原始文件。')
+        if not self.key or not self.selected_source_id:
+            raise ValueError('当前文档没有可打开的原始文件。')
         row=next((r for r in self.store.sources(self.key) if r[0]==self.selected_source_id),None)
-        if not row:raise ValueError('原始资料记录已变化，请刷新后重试。')
-        self.open_path(self.store.settings.docs_dir/row[2])
+        if not row:
+            raise ValueError('原始资料记录已变化，请刷新后重试。')
+        self.open_path(self.archived_source_path(row[2]))
 
     def on_document_tree_select(self,event=None):
         sel=self.document_list.selection()
@@ -2616,20 +2648,15 @@ class CompactStudio(CompactStudioV4):
         else:self.current_project_name=self.document_project_map.get(iid,self.current_project_name)
 
     def build_progress_page(self):
-        page=self.pages['progress'];self.page_title(page,'进度统计','统计范围可以是全部项目、指定项目或指定文档；点击统计分组查看任务。')
-        filters=ttk.LabelFrame(page,text='统计范围',padding=9);filters.pack(fill='x',pady=(0,10))
-        ttk.Label(filters,text='范围').pack(side='left',padx=(0,6))
-        self.progress_scope_var=tk.StringVar(value='全部项目')
-        self.progress_scope_box=ttk.Combobox(filters,textvariable=self.progress_scope_var,values=['全部项目','指定项目','指定文档'],state='readonly',width=14)
-        self.progress_scope_box.pack(side='left',padx=(0,10));self.progress_scope_box.bind('<<ComboboxSelected>>',lambda e:self.refresh_progress(reset_group=True))
+        page=self.pages['progress']
+        self.page_title(page,'进度统计','选择全部项目或单独项目；点击下方统计分组查看任务。')
+        filters=ttk.LabelFrame(page,text='统计项目',padding=9)
+        filters.pack(fill='x',pady=(0,10))
         ttk.Label(filters,text='项目').pack(side='left',padx=(0,6))
-        self.progress_project_var=tk.StringVar()
-        self.progress_project_box=ttk.Combobox(filters,textvariable=self.progress_project_var,state='readonly',width=24)
-        self.progress_project_box.pack(side='left',padx=(0,10));self.progress_project_box.bind('<<ComboboxSelected>>',lambda e:self.refresh_progress(reset_group=True))
-        ttk.Label(filters,text='文档').pack(side='left',padx=(0,6))
-        self.progress_document_var=tk.StringVar()
-        self.progress_document_box=ttk.Combobox(filters,textvariable=self.progress_document_var,state='readonly',width=30)
-        self.progress_document_box.pack(side='left',fill='x',expand=True,padx=(0,10));self.progress_document_box.bind('<<ComboboxSelected>>',lambda e:self.refresh_progress(reset_group=True))
+        self.progress_scope_var=tk.StringVar(value='全部项目')
+        self.progress_scope_box=ttk.Combobox(filters,textvariable=self.progress_scope_var,values=['全部项目'],state='readonly',width=32)
+        self.progress_scope_box.pack(side='left',padx=(0,10))
+        self.progress_scope_box.bind('<<ComboboxSelected>>',lambda e:self.refresh_progress(reset_group=True))
         ttk.Button(filters,text='刷新统计',command=lambda:self.refresh_progress(reset_group=True)).pack(side='right')
         cards=ttk.Frame(page);cards.pack(fill='x',pady=(0,9))
         self.progress_total=tk.StringVar(value='—');self.progress_done=tk.StringVar(value='—');self.progress_open=tk.StringVar(value='—');self.progress_rate=tk.StringVar(value='—')
@@ -2638,7 +2665,7 @@ class CompactStudio(CompactStudioV4):
             ttk.Label(box,textvariable=var,font=('Microsoft YaHei',16,'bold')).pack(anchor='center')
         self.progress_bar=ttk.Progressbar(page,orient='horizontal',mode='determinate',maximum=100);self.progress_bar.pack(fill='x',pady=(0,9))
         split=ttk.Panedwindow(page,orient='vertical');split.pack(fill='both',expand=True)
-        group_box=ttk.LabelFrame(split,text='项目 / 文档 / 章节统计',padding=7);split.add(group_box,weight=2)
+        group_box=ttk.LabelFrame(split,text='项目 / 文档统计分组',padding=7);split.add(group_box,weight=2)
         self.progress_chapters=ttk.Treeview(group_box,columns=('group','total','done','pending','rate'),show='headings',height=6)
         for col,label,width in [('group','统计分组',390),('total','任务总数',90),('done','已完成',90),('pending','未完成',90),('rate','完成率',90)]:
             self.progress_chapters.heading(col,text=label);self.progress_chapters.column(col,width=width,minwidth=70,stretch=col=='group',anchor='w' if col=='group' else 'center')
@@ -2676,7 +2703,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Label(page,text='当前数据位置：'+str(Path(self.store.settings.home).parent),foreground='#52647B',wraplength=980,justify='left').pack(anchor='w',pady=(8,3))
         ttk.Label(page,text='重要：V8 用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。软件更新不覆盖该目录；卸载或清理前请先备份。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
         update_box=ttk.LabelFrame(page,text='软件更新 · GitHub',padding=12);update_box.pack(fill='x',pady=(10,0))
-        self.update_status_var=tk.StringVar(value='当前版本：V8.0.3 · GitHub 单仓库更新')
+        self.update_status_var=tk.StringVar(value='当前版本：V8.0.4 · GitHub 单仓库更新')
         ttk.Label(update_box,textvariable=self.update_status_var,foreground='#52647B').pack(side='left',fill='x',expand=True)
         self.update_button=ttk.Button(update_box,text='检查 GitHub 更新',command=lambda:self.guard(self.check_github_update))
         self.update_button.pack(side='right')
@@ -3003,45 +3030,61 @@ class CompactStudio(CompactStudioV4):
         if not name or not name.strip():return
         doc=self.s.create_document(project_name,name.strip())
         self.current_project_name=project_name
-        self.refresh_tree(doc.key);self.load_doc(doc.key)
-        if self.project_list.exists('d:'+doc.key):
-            self.project_list.selection_set('d:'+doc.key)
-        self.show_page('tasks')
-        self.status.set('已新建文档：'+project_name+' / '+doc.name)
-
+        self.refresh_tree(doc.key)
+        project=next((p for p in self.s.project_groups() if p.name==project_name),None)
+        if project and self.project_list.exists('project-'+str(project.id)):
+            project_iid='project-'+str(project.id)
+            self.project_list.item(project_iid,open=True)
+            document_iid='d:'+doc.key
+            if self.project_list.exists(document_iid):
+                self.project_list.selection_set(document_iid)
+                self.project_list.focus(document_iid)
+                self.project_list.see(document_iid)
+                self.on_project_selected()
+        self.show_page('projects')
+        self.status.set('已新建文档：'+project_name+' / '+doc.name+'。双击该文档进入任务处理。')
 
     def delete_project_or_document(self):
         sel=self.project_list.selection()
         if not sel:raise ValueError('请在项目树中选择要删除的项目或文档。')
         item=sel[0]
         self.keep_draft();self.persist_notes()
+        backup=None
         if item.startswith('d:'):
             key=item[2:];doc=self.s.document(key)
             count=len(self.s.list_requirements(project=key))
-            if not messagebox.askyesno('删除文档',
-                f'确定删除文档「{doc.name}」吗？\n所属项目：{doc.project_name}\n包含任务：{count} 条\n\n程序会先完整备份；删除后可从备份恢复。',
-                icon='warning',parent=self):return
-            backup=self.store.delete_document_permanently(key)
+            if not messagebox.askyesno(
+                '删除文档',
+                f'确定删除文档「{doc.name}」吗？\n所属项目：{doc.project_name}\n包含任务：{count} 条\n\n删除后无法从本机恢复。确定继续？',
+                icon='warning',parent=self
+            ):return
+            self.store.delete_document_permanently(key)
             affected=(self.key==key)
-            project=doc.project_name
         elif item.startswith('project-'):
             project=self.project_list.item(item,'values')[0]
             docs=list(self.s.documents_for(project))
             count=sum(len(self.s.list_requirements(project=d.key)) for d in docs)
-            if not messagebox.askyesno('删除整个项目',
+            if not messagebox.askyesno(
+                '删除整个项目',
                 f'确定删除整个项目「{project}」吗？\n将同时删除 {len(docs)} 份文档、{count} 条任务及归档资料。\n\n程序会先完整备份；删除后可从备份恢复。',
-                icon='warning',parent=self):return
+                icon='warning',parent=self
+            ):return
             backup,keys=self.store.delete_project_permanently(project)
             affected=(self.key in keys)
-        else:raise ValueError('请先选择项目或文档。')
+        else:
+            raise ValueError('请先选择项目或文档。')
         if affected:
             self.key=None;self.rid=None;self.checked_ids.clear();self.visible_ids=[];self._task_focus_id=None
             self.insert_after_id=None;self.selected_source_id=None
             self.hide_editor();self.clear_task_document('原文档已删除。请重新选择文档。')
         self.current_project_name=None
         self.refresh_tree();self.refresh_tasks();self.refresh_task_selectors('')
-        self.status.set('已删除，删除前备份：'+str(backup))
-        messagebox.showinfo('删除完成','已删除所选项目或文档。\n\n完整备份位置：\n'+str(backup),parent=self)
+        if backup:
+            self.status.set('项目已删除；删除前备份：'+str(backup))
+            messagebox.showinfo('删除完成','已删除所选项目。完整备份位置：\n'+str(backup),parent=self)
+        else:
+            self.status.set('文档已删除；没有自动创建备份。')
+            messagebox.showinfo('删除完成','已删除所选文档。没有自动创建备份。',parent=self)
 
     def import_for_tree_selection(self):
         selected=self.project_list.selection()
@@ -3236,7 +3279,7 @@ class CompactStudio(CompactStudioV4):
         if not sel:raise ValueError('请先选择一份已归档的原始资料。')
         item=self.import_source_map.get(sel[0])
         if not item:raise ValueError('资料记录已变化，请刷新后重试。')
-        self.open_path(self.store.settings.docs_dir/item[1])
+        self.open_path(self.archived_source_path(item[1]))
 
     def refresh_export_page(self):
         if not hasattr(self,'export_doc_label'):return
@@ -3253,59 +3296,41 @@ class CompactStudio(CompactStudioV4):
 
     def refresh_progress(self,reset_group=False):
         if not hasattr(self,'progress_chapters'):return
-        docs=self._progress_documents();projects=list(dict.fromkeys(x[0] for x in docs));scope=self.progress_scope_var.get()
-        if scope=='全部项目':
-            self.progress_project_box.configure(values=['全部项目'],state='disabled');self.progress_project_var.set('全部项目')
-            self.progress_document_box.configure(values=['全部文档'],state='disabled');self.progress_document_var.set('全部文档')
-            selected_docs=docs
-        else:
-            self.progress_project_box.configure(values=projects,state='readonly')
-            if self.progress_project_var.get() not in projects:self.progress_project_var.set(self.current_project_name if self.current_project_name in projects else (projects[0] if projects else ''))
-            project_docs=[x for x in docs if x[0]==self.progress_project_var.get()]
-            labels=[];doc_by_label={}
-            counts={}
-            for project,name,key in project_docs:counts[(project,name)]=counts.get((project,name),0)+1
-            for project,name,key in project_docs:
-                label=f'{project} / {name}'
-                if counts[(project,name)]>1:label+=f' [{str(key)[:8]}]'
-                labels.append(label);doc_by_label[label]=key
-            if scope=='指定项目':
-                self.progress_document_box.configure(values=['该项目全部文档'],state='disabled');self.progress_document_var.set('该项目全部文档')
-                selected_docs=project_docs
-            else:
-                self.progress_document_box.configure(values=labels,state='readonly')
-                if self.progress_document_var.get() not in doc_by_label:self.progress_document_var.set(labels[0] if labels else '')
-                key=doc_by_label.get(self.progress_document_var.get())
-                selected_docs=[x for x in docs if x[2]==key] if key else []
+        docs=self._progress_documents()
+        projects=list(dict.fromkeys(x[0] for x in docs))
+        options=['全部项目']+projects
+        self.progress_scope_box.configure(values=options)
+        scope=self.progress_scope_var.get()
+        if scope not in options:
+            scope='全部项目';self.progress_scope_var.set(scope)
+        selected_docs=docs if scope=='全部项目' else [item for item in docs if item[0]==scope]
         entries=[]
         for project,name,key in selected_docs:
             for row in self.store.tasks(key):entries.append((project,name,key,row))
         total=len(entries);done=sum(bool(x[3].done) for x in entries);pending=total-done
         if total:
-            self.progress_total.set(str(total));self.progress_done.set(str(done));self.progress_open.set(str(pending));self.progress_rate.set(f'{done/total:.0%}');self.progress_bar.configure(value=done/total*100)
-            self.progress_hint.configure(text=f'当前范围：{scope} · 共 {len(selected_docs)} 份文档、{total} 条任务。')
+            self.progress_total.set(str(total));self.progress_done.set(str(done));self.progress_open.set(str(pending));self.progress_rate.set(f'{done/total:.0%}')
+            self.progress_bar.configure(value=done/total*100)
+            self.progress_hint.configure(text=f'当前项目：{scope} · 共 {len(selected_docs)} 份文档、{total} 条任务。')
         else:
-            for var in (self.progress_total,self.progress_done,self.progress_open,self.progress_rate):var.set('—')
-            self.progress_bar.configure(value=0);self.progress_hint.configure(text='当前统计范围没有文档或任务。请调整范围，或先创建文档并添加任务。')
+            for var in (self.progress_total,self.progress_done,self.progress_open,self.progress_rate):var.set('0')
+            self.progress_bar.configure(value=0);self.progress_hint.configure(text='当前项目没有文档或任务。可以先创建文档并添加任务。')
         groups={}
         if scope=='全部项目':
-            for project,name,key in selected_docs:groups.setdefault(('project',project),[])
+            for project in projects:groups.setdefault(('project',project),[])
             for project,name,key,row in entries:groups.setdefault(('project',project),[]).append((project,name,key,row))
-        elif scope=='指定项目':
+        else:
             for project,name,key in selected_docs:groups.setdefault(('document',key),[])
             for project,name,key,row in entries:groups.setdefault(('document',key),[]).append((project,name,key,row))
-        else:
-            for project,name,key,row in entries:groups.setdefault(('chapter',row.section or '未分类'),[]).append((project,name,key,row))
         previous=None
         if not reset_group and self.progress_chapters.selection():previous=self.progress_chapters.selection()[0]
         self.progress_chapters.delete(*self.progress_chapters.get_children());self.progress_group_map={}
         for i,(group_key,items) in enumerate(groups.items()):
             kind,value=group_key
             if kind=='project':label=value
-            elif kind=='document':
+            else:
                 meta=next(((project,name) for project,name,key in selected_docs if key==value),('',''))
                 label=f'{meta[0]} / {meta[1]}'
-            else:label=value
             n=len(items);d=sum(bool(x[3].done) for x in items);iid='group-'+str(i)
             self.progress_group_map[iid]={'kind':kind,'value':value,'items':items}
             self.progress_chapters.insert('','end',iid=iid,values=(label,n,d,n-d,f'{d/n:.0%}' if n else '—'))
@@ -3313,7 +3338,8 @@ class CompactStudio(CompactStudioV4):
         if children:
             chosen=previous if previous in children else children[0]
             self.progress_chapters.selection_set(chosen)
-        else:self.progress_tasks.delete(*self.progress_tasks.get_children());self.progress_task_doc_map={}
+        else:
+            self.progress_tasks.delete(*self.progress_tasks.get_children());self.progress_task_doc_map={}
         self.refresh_progress_tasks()
 
     def refresh_progress_tasks(self):
@@ -3378,21 +3404,21 @@ class CompactStudio(CompactStudioV4):
         messagebox.showinfo('备份迁移完成',f'已迁移 {result["projects"]} 个项目、{result["documents"]} 份文档。\n\n迁移前备份：\n{result["backup"]}',parent=self)
 
     def help(self):
-        self.show_text('ReqDoc Studio V8 使用说明',"""【入口】主导航仅四项：项目与文档、任务处理、进度统计、设置与数据。
+        self.show_text('ReqDoc Studio V8.0.4 使用说明',"""【项目与文档】按住项目或文档行拖动可调整同级顺序。选中项目后新建文档；新建后仍停留在项目与文档页，双击文档进入任务处理。
 
-    【项目与文档】按住项目或文档行拖动可调整同级顺序，重启后保留；跨项目移动在数据引擎支持时才可用。项目是树的父项，文档在项目下面。选中项目后新建文档；双击文档进入任务处理。项目与文档在同一页面创建、打开、重命名。
+【任务处理】默认同时显示文档预览、任务列表和任务编辑器。左侧显示只读原始资料；没有原始资料时显示当前文档汇总。右侧可编辑整理后的任务。
 
-    【任务处理】页面顶部独立选择项目和文档。默认显示软件整理后的任务列表，任务标题、章节、完成状态和正文均属于本软件的处理结果。原始资料默认隐藏，需要核对来源时再打开只读预览；原始文件保存在归档区，不会被任务编辑覆盖。
+【按需编辑】单击任务可加载编辑内容；新增任务、编辑任务、插入图片和粘贴图片均在当前工作区完成。正文支持 Markdown。保存后更新任务记录和文档汇总。
 
-    【按需编辑】点击“新增任务”、单击任务后选择“编辑任务”或双击任务，编辑器会在任务工作区展开。正文支持 Markdown 和图片。先在正文中单击定位光标，再使用“插入图片到光标处”或“粘贴图片到光标处”；使用“预览正文”检查图片位置。保存后更新任务记录和文档汇总。
+【导入与导出】导入前可以预览、编辑拆分任务并选择目标文档。文档操作保留 Word 与 Markdown 图片包导出；文档说明编辑和归档资料管理入口已移除。
 
-    【导入与拖放】将 Word、TXT、Markdown 从资源管理器拖入主窗口即可进入导入预览；也可以点击“导入资料”。导入前可以预览、编辑拆分任务并选择目标文档。“文档操作”包含 Word、Markdown 图片包导出以及文档说明和资料归档管理。
+【原始资料】归档原始文件只读保留；需要核对来源时在文档预览区查看或打开原件。任务编辑只修改软件整理后的工作结果。
 
-    【原始资料】归档原始文件只读保留；提取文本只作为来源核对，不作为任务编辑入口。需要整理内容时，请在任务列表中编辑独立的任务记录。\n\n    【进度】所有统计直接读取任务的 done 状态。进度页支持全部项目、指定项目、指定文档三级范围。
+【进度】统计项目选择器只保留“全部项目”和具体项目名称；选择单个项目后，下方按文档分组，选择分组查看任务。
 
-    【数据安全】请勿覆盖旧版目录。新版本独立解压；如果已有旧版数据，先备份，并在“设置与数据”中选择旧版 reqdoc-data 或备份 ZIP 迁移，目标已有项目时拒绝覆盖。原资料归档不会因编辑任务而删除。
+【删除与备份】删除文档不自动创建备份；需要保留数据时，请先在“设置与数据”中主动备份。删除整个项目仍会先创建备份。原始资料归档不会因编辑任务而改变。
 
-    【局限】Windows 原生窗口与真实用户数据库迁移尚需实机验收。本版仍保留部分旧 UI 引擎的兼容类，程序与用户数据尚未全面迁移为固定目录；不要删除最后一份有效的数据文件夹。""")
+【数据安全】用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。更新程序不覆盖用户数据；不要删除最后一份有效数据目录。""")
 
     def close(self):
         if getattr(self,'_closing',False):return

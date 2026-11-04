@@ -6,6 +6,7 @@ import tkinter as tk
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from reqdoc.config import Settings
 from reqdoc_studio import CompactStudio, Store
@@ -109,6 +110,77 @@ class PreservedUiTests(unittest.TestCase):
         self.assertTrue(app._closing)
         app._poll_github_update()
         app.report_callback_exception(RuntimeError, RuntimeError("late callback"), None)
+
+    def test_dynamic_source_table_columns_can_be_cleared_and_rebuilt(self):
+        app = CompactStudio(self.store)
+        app.withdraw()
+        self.addCleanup(_safe_destroy, app)
+        app._refresh_source_table("| 名称 | 状态 |\\n| --- | --- |\\n| 资料 A | 已整理 |")
+        self.assertEqual(tuple(app.task_table_grid["columns"]), ("col0", "col1"))
+        app._refresh_source_table("没有表格的普通文本")
+        self.assertEqual(tuple(app.task_table_grid["columns"]), ())
+        app._refresh_source_table("| 标题 | 章节 | 备注 |\\n| --- | --- | --- |\\n| 任务 A | 场景 | 说明 |")
+        self.assertEqual(tuple(app.task_table_grid["columns"]), ("col0", "col1", "col2"))
+
+    def test_document_preview_and_task_editor_are_visible_together(self):
+        app = CompactStudio(self.store)
+        app.withdraw()
+        self.addCleanup(_safe_destroy, app)
+        self.assertTrue(app.source_panel_visible)
+        self.assertTrue(app.editor_open)
+        self.assertIn(str(app.task_source_panel), app.tasks_split.panes())
+        self.assertIn(str(app.task_editor_panel), app.task_vertical_split.panes())
+
+    def test_new_document_stays_on_project_page_until_double_click(self):
+        app = CompactStudio(self.store)
+        app.withdraw()
+        self.addCleanup(_safe_destroy, app)
+        app.show_page("projects")
+        app.refresh_projects_page()
+        app.project_list.selection_set("project-" + str(self.project.id))
+        with patch("reqdoc_studio.simpledialog.askstring", return_value="第二份文档"):
+            app.new_document()
+        selected = app.project_list.selection()
+        self.assertEqual(len(selected), 1)
+        self.assertTrue(selected[0].startswith("d:"))
+        new_key = selected[0][2:]
+        self.assertIsNone(app.key)
+        self.assertEqual(app.pages["projects"].winfo_manager(), "pack")
+        app.open_project_from_list()
+        self.assertEqual(app.key, new_key)
+        self.assertEqual(app.pages["tasks"].winfo_manager(), "pack")
+
+    def test_progress_filter_is_all_projects_or_one_project(self):
+        app = CompactStudio(self.store)
+        app.withdraw()
+        self.addCleanup(_safe_destroy, app)
+        app.refresh_progress(reset_group=True)
+        self.assertEqual(tuple(app.progress_scope_box["values"]), ("全部项目", "视觉项目"))
+        self.assertFalse(hasattr(app, "progress_project_box"))
+        self.assertFalse(hasattr(app, "progress_document_box"))
+        app.progress_scope_var.set("视觉项目")
+        app.refresh_progress(reset_group=True)
+        children = app.progress_chapters.get_children()
+        self.assertEqual(len(children), 1)
+        self.assertEqual(app.progress_chapters.item(children[0], "values")[0], "视觉项目 / 场景整理")
+
+    def test_delete_document_does_not_create_automatic_backup(self):
+        with patch.object(self.store, "backup", side_effect=AssertionError("backup called")):
+            self.store.delete_document_permanently(self.document.key)
+        self.assertEqual(self.store.service.documents_for(self.project.name), [])
+
+    def test_archived_source_open_uses_checked_archive_path(self):
+        app = CompactStudio(self.store)
+        app.withdraw()
+        self.addCleanup(_safe_destroy, app)
+        original = Path(self.temp.name) / "original.md"
+        original.write_text("# 原始资料\\n\\n来源正文", encoding="utf-8")
+        self.store.archive_source(self.document.key, original)
+        app.load_doc(self.document.key)
+        with patch.object(app, "open_path") as open_path:
+            app.open_task_source()
+        row = self.store.sources(self.document.key)[0]
+        open_path.assert_called_once_with((self.settings.docs_dir / row[2]).resolve())
 
 
 if __name__ == "__main__":
