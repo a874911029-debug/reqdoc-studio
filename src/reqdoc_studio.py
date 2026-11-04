@@ -2236,7 +2236,7 @@ class CompactStudio(CompactStudioV4):
         CompactStudioV4.new_task(self)
         self._task_focus_id=None
         self.show_editor()
-        self.status.set('正在新建任务。填写标题、章节、正文后点击「保存任务」。')
+        self.status.set('新建任务编辑器已打开。填写标题、章节和正文；图片可插入光标位置，完成后点击「保存任务」。')
 
     def focused_task_id(self):
         """Resolve the one task targeted by edit/insert/image actions.
