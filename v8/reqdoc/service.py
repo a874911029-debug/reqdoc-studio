@@ -1,5 +1,5 @@
 from __future__ import annotations
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -251,6 +251,10 @@ class ReqdocService:
     def prepare_add(self, content, project, title, section, use_llm=False):
         if self._document_row(project) is None:
             raise ValueError("目标文档不存在。")
+        return self._task_data(project, title, section, content)
+
+    @staticmethod
+    def _task_data(project, title, section, content):
         title = str(title).strip()
         content = str(content or "")
         if not title and not content.strip():
@@ -266,19 +270,32 @@ class ReqdocService:
         if not isinstance(prepared, dict):
             raise ValueError("任务数据无效。")
         project = prepared["project"]
-        self._document_row(project) or (_ for _ in ()).throw(ValueError("目标文档不存在。"))
-        with self.connect() as c:
+        ident, = self.commit_task_rows(project, [prepared])
+        return ServiceResult(self.get_requirement(ident))
+
+    def commit_task_rows(self, project, rows, *, connection=None):
+        """Append a conversion batch atomically and keep its document order."""
+        project = str(project)
+        prepared = [self._task_data(project, row["title"], row["section"], row["content"]) for row in rows]
+        ids = []
+        with (self.connect() if connection is None else nullcontext(connection)) as c:
+            if not c.in_transaction:
+                c.execute("BEGIN IMMEDIATE")
+            if c.execute("SELECT 1 FROM reqdoc_documents WHERE key=?", (project,)).fetchone() is None:
+                raise ValueError("目标文档不存在。")
             position = c.execute(
                 "SELECT COALESCE(MAX(position),-1000)+1000 FROM reqdoc_requirements WHERE project=?",
                 (project,),
             ).fetchone()[0]
-            cursor = c.execute("""
-                INSERT INTO reqdoc_requirements(project,title,section,content,done,position,created_at,updated_at)
-                VALUES(?,?,?,?,0,?,?,?)
-            """, (project, prepared["title"], prepared["section"],
-                  prepared["content"], int(position), _now(), _now()))
-            ident = cursor.lastrowid
-        return ServiceResult(self.get_requirement(ident))
+            timestamp = _now()
+            for row in prepared:
+                cursor = c.execute("""
+                    INSERT INTO reqdoc_requirements(project,title,section,content,done,position,created_at,updated_at)
+                    VALUES(?,?,?,?,0,?,?,?)
+                """, (project, row["title"], row["section"], row["content"], position, timestamp, timestamp))
+                ids.append(cursor.lastrowid)
+                position += 1000
+        return ids
 
     def update(self, requirement_id, **fields):
         allowed = {"title", "section", "content", "done"}

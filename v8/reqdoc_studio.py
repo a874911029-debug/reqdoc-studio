@@ -5,7 +5,7 @@ from __future__ import annotations
 import os, sys, re, json, uuid, hashlib, shutil, sqlite3, zipfile, tempfile, logging
 from pathlib import Path
 from datetime import datetime
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from reqdoc.config import Settings
@@ -14,8 +14,9 @@ from reqdoc.documents import DocumentService, render_requirement_body
 from reqdoc.gui.theme import configure_theme
 from reqdoc.gui.widgets import MarkdownView
 from reqdoc_source_table import tables_in, is_task_table, table_to_task_items
+from version import VERSION as APP_VERSION
 
-VERSION = 'ReqDoc Studio V8.0.6'
+VERSION = f'ReqDoc Studio V{APP_VERSION}'
 def stamp(): return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 def digest(data): return hashlib.sha256(data).hexdigest()
 def write_atomic(path, data):
@@ -109,9 +110,11 @@ def read_source(path, media_dir=None):
             table = Table(node,doc)
             rows = [[c.text.replace('\n',' / ').replace('|','\\|') for c in row.cells] for row in table.rows]
             if rows:
-                parts.append('| ' + ' | '.join(rows[0]) + ' |')
-                parts.append('| ' + ' | '.join(['---']*len(rows[0])) + ' |')
-                parts.extend('| '+' | '.join(row)+' |' for row in rows[1:])
+                parts.append('\n'.join([
+                    '| ' + ' | '.join(rows[0]) + ' |',
+                    '| ' + ' | '.join(['---']*len(rows[0])) + ' |',
+                    *('| ' + ' | '.join(row) + ' |' for row in rows[1:]),
+                ]))
     return '\n\n'.join(parts), warnings
 
 
@@ -146,18 +149,19 @@ def export_word(text, path, base):
     d=Document();style=d.styles['Normal'];style.font.name='Microsoft YaHei';style.font.size=Pt(10.5)
     style.element.rPr.rFonts.set(qn('w:eastAsia'),'Microsoft YaHei')
     lines=text.splitlines();i=0;fence=False
+    tables={table.start_line:table for table in tables_in(text)}
     while i<len(lines):
         line=lines[i];i+=1
         if line.startswith(('```','~~~')):fence=not fence;continue
         if fence:
             p=d.add_paragraph();p.add_run(line).font.name='Consolas';continue
-        if line.strip().startswith('|') and i<len(lines) and re.match(r'^\s*\|?\s*:?-{3}',lines[i]):
-            rows=[line];i+=1
-            while i<len(lines) and lines[i].strip().startswith('|'):rows.append(lines[i]);i+=1
-            cells=[re.split(r'(?<!\\)\|',r.strip().strip('|')) for r in rows]
-            table=d.add_table(rows=len(cells),cols=max(map(len,cells)));table.style='Table Grid'
+        source_table=tables.get(i-1)
+        if source_table is not None:
+            cells=(source_table.headers,*source_table.rows)
+            table=d.add_table(rows=len(cells),cols=len(source_table.headers));table.style='Table Grid'
             for ri,row in enumerate(cells):
-                for ci,value in enumerate(row):table.cell(ri,ci).text=value.strip().replace('\\|','|')
+                for ci,value in enumerate(row):table.cell(ri,ci).text=value
+            i=source_table.end_line
             continue
         image=re.match(r'^!\[([^\]]*)\]\((.+)\)\s*$',line)
         if image:
@@ -283,9 +287,9 @@ class Store:
             for index,task_id in enumerate(ids):
                 c.execute('INSERT OR REPLACE INTO studio_order(id,position) VALUES(?,?)',(task_id,index*1000))
         return row
-    def compose(self,key,only_open=False):
+    def compose(self,key,only_open=False,*,rows=None):
         doc=self.service.document(key);intro,outro=self.notes(key)
-        rows=[r for r in self.tasks(key) if not only_open or not r.done]
+        rows=[r for r in (self.tasks(key) if rows is None else rows) if not only_open or not r.done]
         result=[f'# {doc.name}',f'> 项目：{doc.project_name} · 任务 {len(rows)} · 已完成 {sum(r.done for r in rows)}','']
         if intro:result.extend([intro,''])
         section=None
@@ -377,11 +381,12 @@ class Store:
             conn.execute('DELETE FROM studio_versions WHERE doc=?',(key,))
         return backup
 
-    def archive_source(self,key,path):
+    def archive_source(self,key,path,*,connection=None,rollback=None):
         """Archive one original and return its document-relative extracted text."""
         path=Path(path);sid=uuid.uuid4().hex
         base=self.service.document_folder(key)
         folder=base/'_sources'/sid;folder.mkdir(parents=True)
+        if rollback is not None:rollback.callback(shutil.rmtree,folder,ignore_errors=True)
         target=folder/path.name
         try:
             shutil.copy2(path,target)
@@ -400,7 +405,7 @@ class Store:
                     dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest)
                     return f'![{m[1]}]({dest.relative_to(base).as_posix()})'
                 text=re.sub(r'!\[([^\]]*)\]\(([^)]+)\)',image_copy,text)
-            with self.conn() as c:
+            with (self.conn() if connection is None else nullcontext(connection)) as c:
                 c.execute('INSERT INTO studio_sources VALUES(?,?,?,?,?,?)',(sid,key,path.name,str(target.relative_to(self.settings.docs_dir)),text,stamp()))
             return warnings,text
         except Exception:
@@ -739,13 +744,14 @@ class Studio(tk.Tk):
         if not self.key:return
         if self.tabs.select()==str(self.previewtab):self.guard(self.refresh_preview)
         if self.tabs.select()==str(self.historytab):self.guard(self.refresh_history)
-    def export(self,kind):
+    def export(self,kind,content=None):
         self.require_doc();self.keep_draft();self.persist_notes()
         if self.dirty and not messagebox.askyesno('有未保存的任务草稿','汇总仅包含已保存任务。仍导出当前已保存内容吗？',parent=self):return
         name=self.s.document(self.key).file_stem or '汇总文档'
         path=filedialog.asksaveasfilename(parent=self,initialfile=name+'.'+kind,defaultextension='.'+kind,filetypes=[('Word' if kind=='docx' else 'Markdown 与图片包','*.'+kind)])
         if not path:return
-        content=self.store.compose(self.key,self.onlyopen.get());base=self.s.document_folder(self.key)
+        if content is None:content=self.store.compose(self.key,self.onlyopen.get())
+        base=self.s.document_folder(self.key)
         if kind=='docx':export_word(content,path,base)
         else:
             with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:
@@ -1915,7 +1921,7 @@ class CompactStudio(CompactStudioV4):
         except Exception:pass
 
     def build(self):
-        self.title('文档工作台 · ReqDoc Studio V8.0.6')
+        self.title(f'文档工作台 · {VERSION}')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
@@ -1951,7 +1957,7 @@ class CompactStudio(CompactStudioV4):
         self.status=tk.StringVar(value='就绪 · 数据保存在本机')
         ttk.Label(self,textvariable=self.status,padding=(12,5)).pack(fill='x')
         self.show_page('projects')
-        self.after(50,self.refresh_tree)
+        self._refresh_tree_after_id=self.after(50,self.refresh_tree)
         self._file_drop=None
         self._drop_after_id=self.after(240,self.install_file_drop) if sys.platform=='win32' else None
 
@@ -2703,7 +2709,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Label(page,text='当前数据位置：'+str(Path(self.store.settings.home).parent),foreground='#52647B',wraplength=980,justify='left').pack(anchor='w',pady=(8,3))
         ttk.Label(page,text='重要：V8 用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。软件更新不覆盖该目录；卸载或清理前请先备份。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
         update_box=ttk.LabelFrame(page,text='软件更新 · GitHub',padding=12);update_box.pack(fill='x',pady=(10,0))
-        self.update_status_var=tk.StringVar(value='当前版本：V8.0.6 · GitHub 单仓库更新')
+        self.update_status_var=tk.StringVar(value=f'当前版本：V{APP_VERSION} · GitHub 单仓库更新')
         ttk.Label(update_box,textvariable=self.update_status_var,foreground='#52647B').pack(side='left',fill='x',expand=True)
         self.update_button=ttk.Button(update_box,text='检查 GitHub 更新',command=lambda:self.guard(self.check_github_update))
         self.update_button.pack(side='right')
@@ -2849,10 +2855,6 @@ class CompactStudio(CompactStudioV4):
         if name=='tasks':
             self.refresh_task_selectors(self.key)
             if not self.key and self.task_doc_map:self.on_task_document_selected()
-            if not self._task_sashes_initialized:
-                if getattr(self,'_task_sash_after_id',None):
-                    self.after_cancel(self._task_sash_after_id)
-                self._task_sash_after_id=self.after(120,self.position_task_sashes)
         if hasattr(self,'context_label'):
             if self.key:
                 d=self.s.document(self.key)
@@ -3426,7 +3428,7 @@ class CompactStudio(CompactStudioV4):
         messagebox.showinfo('备份迁移完成',f'已迁移 {result["projects"]} 个项目、{result["documents"]} 份文档。\n\n迁移前备份：\n{result["backup"]}',parent=self)
 
     def help(self):
-        self.show_text('ReqDoc Studio V8.0.6 使用说明',"""【项目与文档】按住项目或文档行拖动可调整同级顺序。选中项目后新建文档；新建后仍停留在项目与文档页，双击文档进入任务处理。
+        self.show_text(f'{VERSION} 使用说明',"""【项目与文档】按住项目或文档行拖动可调整同级顺序。选中项目后新建文档；新建后仍停留在项目与文档页，双击文档进入任务处理。
 
 【任务处理】默认同时显示文档预览、任务列表和任务编辑器。左侧显示只读原始资料；没有原始资料时显示当前文档汇总。右侧可编辑整理后的任务。
 
@@ -3452,7 +3454,8 @@ class CompactStudio(CompactStudioV4):
         self._closing=True
         self._update_in_progress=False
         for handle in ('_autosave_after_id','_refresh_tree_after_id','_task_sash_after_id',
-                       '_editor_sash_after_id','_source_sash_after_id','_update_poll_after_id','_drop_after_id'):
+                       '_editor_sash_after_id','_source_sash_after_id','_update_poll_after_id','_drop_after_id',
+                       '_working_preview_after_id'):
             task=getattr(self,handle,None)
             if task:
                 try:self.after_cancel(task)

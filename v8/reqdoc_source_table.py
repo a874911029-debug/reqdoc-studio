@@ -50,23 +50,38 @@ def tables_in(text: str) -> list[PipeTable]:
             if fence is None:fence=f[1][0]
             elif f[1][0]==fence:fence=None
             i+=1;continue
-        if fence or '|' not in content or '|' not in lines[i+1]:
+        if fence or '|' not in content:
             i+=1;continue
         headers=_cells(content)
-        if len(headers)<2 or not _is_separator(lines[i+1].strip(),len(headers)):
+        separator=i+1
+        while separator<len(lines) and not lines[separator].strip():
+            separator+=1
+        if separator==len(lines) or '|' not in lines[separator] or not _is_separator(lines[separator],len(headers)):
             i+=1;continue
-        j=i+2;rows=[]
-        while j<len(lines) and '|' in lines[j]:
-            cells=_cells(lines[j])
-            if len(cells)!=len(headers):break
-            rows.append(tuple(cells));j+=1
+        # V8.0.6 Word imports stored blank lines between every table row.
+        spaced=separator>i+1
+        j=separator+1;rows=[]
+        while j<len(lines):
+            candidate=j
+            if spaced:
+                while candidate<len(lines) and not lines[candidate].strip():
+                    candidate+=1
+            if candidate==len(lines) or '|' not in lines[candidate]:break
+            cells=_cells(lines[candidate])
+            if len(cells)!=len(headers) or _is_separator(lines[candidate],len(headers)):break
+            if spaced and candidate>j:
+                following=candidate+1
+                while following<len(lines) and not lines[following].strip():
+                    following+=1
+                if following<len(lines) and _is_separator(lines[following],len(headers)):break
+            rows.append(tuple(cells));j=candidate+1
         found.append(PipeTable(i,j,tuple(headers),tuple(rows)))
         i=j
     return found
 
 
 def table_to_markdown(headers:list[str],rows:list[list[str]],newline='\n')->str:
-    if not headers or len(headers)<2:raise ValueError('表格至少需要两列。')
+    if not headers:raise ValueError('表格至少需要一列。')
     count=len(headers)
     if any(len(row)!=count for row in rows):raise ValueError('表格列数不一致。')
     def cell(value):
@@ -111,7 +126,7 @@ def table_to_task_items(table: PipeTable, source_path: str, source_name: str,
     if index is None or index<0 or index>=len(table.headers):
         raise ValueError('必须指定有效的任务标题列。')
     section_headers = {
-        '章节', '所属章节', '分类', '任务分类',
+        '章节', '所属章节', '分组', '所属分组', '分类', '任务分类',
         'section', 'task section', 'category', 'task category', 'group',
     }
     section_col=next((i for i,h in enumerate(table.headers)
