@@ -2243,17 +2243,19 @@ class CompactStudio(CompactStudioV4):
         if self.editor_open and self.rid is None:
             return None
         visible=set(self.visible_ids)
+        selection={int(x) for x in self.list.selection() if str(x).isdigit()}
+        focus=self.list.focus()
+        # The row currently highlighted in the UI always beats an older focus
+        # value or a checkbox selection used for a previous batch operation.
+        if focus and str(focus).isdigit() and int(focus) in selection:
+            return int(focus)
+        if len(selection)==1:
+            return next(iter(selection))
+        if focus and str(focus).isdigit() and int(focus) in visible and int(focus) in self.checked_ids:
+            return int(focus)
         active=getattr(self,'_task_focus_id',None)
         if active in visible:
             return active
-        selection={int(x) for x in self.list.selection() if str(x).isdigit()}
-        focus=self.list.focus()
-        if focus and str(focus).isdigit() and int(focus) in visible:
-            focused=int(focus)
-            if focused in selection or focused in self.checked_ids:
-                return focused
-        if len(selection)==1:
-            return next(iter(selection))
         checked=set(self.checked_ids)&visible
         if len(checked)==1:
             return next(iter(checked))
