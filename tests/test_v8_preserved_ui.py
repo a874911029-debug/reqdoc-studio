@@ -102,6 +102,14 @@ class PreservedUiTests(unittest.TestCase):
             self.assertIn("reqdoc-data/home/reqdoc.db", archive.namelist())
             self.assertTrue(any("/_sources/" in name for name in archive.namelist()))
 
+    def test_destroyed_root_ignores_late_update_callback(self):
+        app = CompactStudio(self.store)
+        app.withdraw()
+        app.destroy()
+        self.assertTrue(app._closing)
+        app._poll_github_update()
+        app.report_callback_exception(RuntimeError, RuntimeError("late callback"), None)
+
 
 if __name__ == "__main__":
     unittest.main()

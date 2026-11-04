@@ -29,12 +29,34 @@ try {
   $actual = (Get-FileHash -LiteralPath $Package -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($actual -ne $Sha256.ToLowerInvariant()) { throw 'ZIP SHA256 mismatch' }
 
-  # Wait for the old application to close without terminating it.
-  for ($i=0; $i -lt 120; $i++) {
+  # Wait briefly for a clean close. If a legacy Tk callback leaves the
+  # old app's fatal dialog open, stop only the PID launched by this updater.
+  # The app has already saved and backed up data after explicit user confirmation.
+  for ($i=0; $i -lt 16; $i++) {
     if (-not (Get-Process -Id $AppPid -ErrorAction SilentlyContinue)) { break }
     Start-Sleep -Milliseconds 500
   }
-  if (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) { throw 'Old app is still running' }
+  $oldProcess = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
+  if ($oldProcess) {
+    if ($oldProcess.ProcessName -cne 'ReqDocStudio') {
+      throw 'Update PID no longer belongs to ReqDoc Studio; refusing to stop another process'
+    }
+    $processInfo = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $AppPid" -ErrorAction SilentlyContinue
+    if ($processInfo -and $processInfo.ExecutablePath) {
+      $expectedExe = [IO.Path]::GetFullPath((Join-Path $InstallDir 'ReqDocStudio.exe'))
+      $actualExe = [IO.Path]::GetFullPath($processInfo.ExecutablePath)
+      if ($actualExe -ine $expectedExe) {
+        throw 'Update PID belongs to a different installation; refusing to stop it'
+      }
+    }
+    WriteLog 'Legacy app did not close cleanly; stopping only the confirmed ReqDocStudio PID after data backup'
+    Stop-Process -Id $AppPid -Force
+    for ($i=0; $i -lt 20; $i++) {
+      if (-not (Get-Process -Id $AppPid -ErrorAction SilentlyContinue)) { break }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+  if (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) { throw 'ReqDoc Studio process could not be stopped' }
 
   New-Item -ItemType Directory -Path $stage,$backup -Force | Out-Null
   $archive = [IO.Compression.ZipFile]::OpenRead($Package)

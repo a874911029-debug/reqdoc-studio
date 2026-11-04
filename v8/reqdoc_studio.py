@@ -15,7 +15,7 @@ from reqdoc.gui.theme import configure_theme
 from reqdoc.gui.widgets import MarkdownView
 from reqdoc_source_table import tables_in, is_task_table, table_to_task_items
 
-VERSION = 'ReqDoc Studio V8.0.1'
+VERSION = 'ReqDoc Studio V8.0.2'
 def stamp(): return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 def digest(data): return hashlib.sha256(data).hexdigest()
 def write_atomic(path, data):
@@ -446,16 +446,23 @@ class Store:
 
 class Studio(tk.Tk):
     def __init__(self,store):
-        super().__init__();self.store=store;self.s=store.service;self.key=None;self.rid=None;self.loading=False;self.dirty=False;self.notes_dirty=False
+        super().__init__();self.store=store;self.s=store.service;self.key=None;self.rid=None;self.loading=False;self.dirty=False;self.notes_dirty=False;self._closing=False
         self.title('reqdoc · 文档与需求工作台 — '+VERSION);self.geometry('1360x880');self.minsize(1100,700)
         self.theme=configure_theme(self);self.configure(bg='#F4F7FB')
         self.protocol('WM_DELETE_WINDOW',self.close)
+        self.bind('<Destroy>',self._on_root_destroy,add='+')
         self.build();self.refresh_tree();self._autosave_after_id=self.after(2000,self.autosave)
         self.bind('<Control-s>',lambda e:self.save_current());self.bind('<Control-n>',lambda e:self.new_task())
     def guard(self,fn):
+        if getattr(self,'_closing',False):return
         try:return fn()
         except Exception as e:
-            logging.exception('Studio action failed');messagebox.showerror('操作未完成',str(e),parent=self);self.status.set('操作未完成；请查看提示。')
+            logging.exception('Studio action failed')
+            if getattr(self,'_closing',False):return
+            try:messagebox.showerror('操作未完成',str(e),parent=self)
+            except tk.TclError:return
+            try:self.status.set('操作未完成；请查看提示。')
+            except tk.TclError:pass
     def button(self,parent,text,command,**kw):
         b=ttk.Button(parent,text=text,command=lambda:self.guard(command));b.pack(side='left',padx=3,pady=3,**kw);return b
     def text_box(self,parent):
@@ -603,9 +610,15 @@ class Studio(tk.Tk):
         else:self.guard(self.save_task)
         return 'break'
     def autosave(self):
+        if getattr(self,'_closing',False):return
         try:self.keep_draft();self.persist_notes()
-        except Exception as e:self.status.set('草稿保存失败：'+str(e))
-        self._autosave_after_id=self.after(2000,self.autosave)
+        except Exception as e:
+            if not getattr(self,'_closing',False):
+                try:self.status.set('草稿保存失败：'+str(e))
+                except tk.TclError:pass
+        if not getattr(self,'_closing',False):
+            try:self._autosave_after_id=self.after(2000,self.autosave)
+            except tk.TclError:self._closing=True
     def selected_ids(self):return [int(x) for x in self.list.selection()]
     def mark(self,done):
         for rid in self.selected_ids():self.s.set_done(rid,done)
@@ -1854,14 +1867,25 @@ class CompactStudioV4(Studio):
 八、注意事项
 本版不调用外部 AI。Word 复杂版式、批注、公式等请以归档的原文件为准。请勿同时用多个程序版本打开同一份 reqdoc-data。''')
 
+    def _on_root_destroy(self,event):
+        if getattr(event,'widget',None) is self:
+            self._closing=True
+            self._update_in_progress=False
+
     def close(self):
+        if getattr(self,'_closing',False):return
         try:self.keep_draft();self.persist_notes()
         except Exception as exc:
-            if not messagebox.askyesno('保存失败',str(exc)+'\n仍然退出吗？',parent=self):return
+            try:
+                if not messagebox.askyesno('保存失败',str(exc)+'\n仍然退出吗？',parent=self):return
+            except tk.TclError:pass
+        self._closing=True
+        self._update_in_progress=False
         try:
             if getattr(self,'_autosave_after_id',None):self.after_cancel(self._autosave_after_id)
         except Exception:pass
-        self.destroy()
+        try:self.destroy()
+        except tk.TclError:pass
 
 
 
@@ -1879,13 +1903,14 @@ class CompactStudio(CompactStudioV4):
 
     def report_callback_exception(self,exc,value,tb):
         logging.error('Unhandled Tk callback',exc_info=(exc,value,tb))
+        if getattr(self,'_closing',False):return
         try:self.status.set('发生界面错误；详细信息已写入 studio.log。')
         except Exception:pass
         try:messagebox.showerror('程序操作异常',str(value)+'\n\n详细信息已记录在 studio.log 中。',parent=self)
         except Exception:pass
 
     def build(self):
-        self.title('文档工作台 · ReqDoc Studio V8.0.1')
+        self.title('文档工作台 · ReqDoc Studio V8.0.2')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
@@ -2651,7 +2676,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Label(page,text='当前数据位置：'+str(Path(self.store.settings.home).parent),foreground='#52647B',wraplength=980,justify='left').pack(anchor='w',pady=(8,3))
         ttk.Label(page,text='重要：V8 用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。软件更新不覆盖该目录；卸载或清理前请先备份。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
         update_box=ttk.LabelFrame(page,text='软件更新 · GitHub',padding=12);update_box.pack(fill='x',pady=(10,0))
-        self.update_status_var=tk.StringVar(value='当前版本：V8.0.1 · GitHub 单仓库更新')
+        self.update_status_var=tk.StringVar(value='当前版本：V8.0.2 · GitHub 单仓库更新')
         ttk.Label(update_box,textvariable=self.update_status_var,foreground='#52647B').pack(side='left',fill='x',expand=True)
         self.update_button=ttk.Button(update_box,text='检查 GitHub 更新',command=lambda:self.guard(self.check_github_update))
         self.update_button.pack(side='right')
@@ -2661,7 +2686,7 @@ class CompactStudio(CompactStudioV4):
     def check_github_update(self):
         """Read public update manifest in a worker; never block Tk for network IO."""
         import queue, threading
-        if getattr(self,'_update_in_progress',False):return
+        if getattr(self,'_closing',False) or getattr(self,'_update_in_progress',False):return
         self._update_in_progress=True
         self.update_button.configure(state='disabled')
         self.update_status_var.set('正在检查 GitHub 最新版本…')
@@ -2678,6 +2703,7 @@ class CompactStudio(CompactStudioV4):
 
     def _poll_github_update(self):
         import queue
+        if getattr(self,'_closing',False):return
         self._update_poll_after_id=None
         q=self._update_queue
         if q is None:return
@@ -2712,12 +2738,15 @@ class CompactStudio(CompactStudioV4):
                 self.update_status_var.set('已下载并通过 SHA-256 和 ZIP 校验')
                 if messagebox.askyesno('准备安装更新','安装包已经验证完毕。\n\n现在备份数据、退出程序并安装更新吗？',parent=self):
                     self._install_github_update(payload)
-        if self._update_in_progress:
-            self._update_poll_after_id=self.after(180,self._poll_github_update)
+        if self._update_in_progress and not getattr(self,'_closing',False):
+            try:self._update_poll_after_id=self.after(180,self._poll_github_update)
+            except tk.TclError:
+                self._closing=True
+                self._update_in_progress=False
 
     def _begin_github_download(self,manifest):
         import queue,threading
-        if getattr(self,'_update_in_progress',False):return
+        if getattr(self,'_closing',False) or getattr(self,'_update_in_progress',False):return
         self._update_in_progress=True;self.update_button.configure(state='disabled')
         self.update_status_var.set('准备下载更新…')
         self._update_queue=queue.Queue()
@@ -2736,11 +2765,14 @@ class CompactStudio(CompactStudioV4):
         from reqdoc_updater import APP_VERSION
         if sys.platform!='win32':raise ValueError('自动安装功能仅适用于 Windows。')
         install_dir=Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parent.parent
-        script=install_dir/'updater.ps1'
-        if not script.is_file():
-            raise ValueError('当前安装目录没有独立更新器 updater.ps1。请使用带更新器的新安装包。')
+        if not (install_dir/'ReqDocStudio.exe').is_file():
+            raise ValueError('当前程序目录不是有效的 ReqDoc Studio V8 安装目录。')
         from reqdoc_updater import validate_zip
         validate_zip(package)
+        with zipfile.ZipFile(package,'r') as archive:
+            updater_bytes=archive.read('updater.ps1')
+        if not updater_bytes or len(updater_bytes)>65536:
+            raise ValueError('更新包中的独立更新器内容无效。')
         self.keep_draft();self.persist_notes()
         data_backup=self.store.backup()
         import hashlib
@@ -2749,9 +2781,10 @@ class CompactStudio(CompactStudioV4):
             for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
         powershell=Path(os.environ.get('SystemRoot',r'C:\Windows'))/'System32'/'WindowsPowerShell'/'v1.0'/'powershell.exe'
         if not powershell.is_file():raise ValueError('未找到 Windows PowerShell，无法启动独立更新器。')
-        # Run a separate copy: the installed updater script may itself be replaced.
+        # Run the updater shipped inside the verified package, not a possibly stale
+        # bootstrap script from the currently installed V8.0.0 directory.
         staged_script=Path(package).parent/'updater-run.ps1'
-        shutil.copy2(script,staged_script)
+        write_atomic(staged_script,updater_bytes)
         args=[str(powershell),'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',
               '-File',str(staged_script),'-InstallDir',str(install_dir),'-PackagePath',str(package),
               '-AppPid',str(os.getpid()),'-Sha256',h.hexdigest()]
