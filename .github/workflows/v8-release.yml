@@ -1,0 +1,154 @@
+name: ReqDoc Studio V8 release and in-app update feed
+
+on:
+  push:
+    branches:
+      - feature/reqdoc-v8-new-only
+    paths:
+      - "v8/version.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reqdoc-v8-release
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check -r v8/requirements.txt
+
+      - name: Compile V8 source
+        shell: pwsh
+        run: python -m compileall -q v8 scripts/build_v8.py
+
+      - name: Run V8 regression tests
+        shell: pwsh
+        env:
+          PYTHONPATH: v8
+        run: python -m unittest discover -v -s tests -p "test_v8_*.py"
+
+      - name: Validate PowerShell updater syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'v8/updater.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | Format-List *; exit 1 }
+
+      - name: Build V8 Windows executable
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name ReqDocStudio --paths v8 --distpath dist --workpath build/v8 --specpath build/v8 v8/app.py
+
+      - name: Assemble fixed-file update ZIP and manifest
+        shell: pwsh
+        run: python scripts/build_v8.py
+
+      - name: Publish V8 package and manifest to the updates branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const manifestText = fs.readFileSync('dist/v8-latest.json', 'utf8');
+            const manifest = JSON.parse(manifestText);
+            if (manifest.schema !== 8 || !/^8\\.\\d+\\.\\d+$/.test(manifest.version)) {
+              throw new Error('Invalid V8 update manifest');
+            }
+            const packageName = 'reqdoc-v' + manifest.version + '-win64.zip';
+            const packagePath = 'dist/' + packageName;
+            const packageBytes = fs.readFileSync(packagePath);
+            const actualSha = crypto.createHash('sha256').update(packageBytes).digest('hex');
+            const expectedUrl = 'https://raw.githubusercontent.com/' + owner + '/' + repo + '/updates/' + packageName;
+            if (manifest.asset.url !== expectedUrl ||
+                manifest.asset.size !== packageBytes.length ||
+                manifest.asset.sha256.toLowerCase() !== actualSha) {
+              throw new Error('Package URL, size or SHA-256 does not match the manifest');
+            }
+
+            const compareVersion = (left, right) => {
+              const a = left.split('.').map(Number);
+              const b = right.split('.').map(Number);
+              for (let i = 0; i < 3; i++) {
+                if (a[i] !== b[i]) return a[i] - b[i];
+              }
+              return 0;
+            };
+
+            const currentRef = await github.rest.git.getRef({
+              owner, repo, ref: 'heads/updates'
+            });
+            const parentSha = currentRef.data.object.sha;
+            const parentCommit = await github.rest.git.getCommit({
+              owner, repo, commit_sha: parentSha
+            });
+            let previous = null;
+            try {
+              const old = await github.rest.repos.getContent({
+                owner, repo, path: 'v8-latest.json', ref: 'updates'
+              });
+              if (Array.isArray(old.data)) throw new Error('Unexpected directory at v8-latest.json');
+              previous = JSON.parse(Buffer.from(old.data.content, 'base64').toString('utf8'));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (previous && compareVersion(manifest.version, previous.version) <= 0) {
+              throw new Error('V8 release version must increase beyond ' + previous.version);
+            }
+
+            const packageBlob = await github.rest.git.createBlob({
+              owner, repo, encoding: 'base64', content: packageBytes.toString('base64')
+            });
+            const manifestBlob = await github.rest.git.createBlob({
+              owner, repo, encoding: 'utf-8', content: manifestText
+            });
+            const tree = await github.rest.git.createTree({
+              owner, repo, base_tree: parentCommit.data.tree.sha,
+              tree: [
+                { path: packageName, mode: '100644', type: 'blob', sha: packageBlob.data.sha },
+                { path: 'v8-latest.json', mode: '100644', type: 'blob', sha: manifestBlob.data.sha }
+              ]
+            });
+            const commit = await github.rest.git.createCommit({
+              owner, repo,
+              message: 'Publish ReqDoc Studio V8 ' + manifest.version,
+              tree: tree.data.sha,
+              parents: [parentSha]
+            });
+            await github.rest.git.updateRef({
+              owner, repo, ref: 'heads/updates', sha: commit.data.sha, force: false
+            });
+            core.info('Published ' + packageName + ' to updates branch; SHA-256=' + actualSha);
+
+      - name: Verify the public in-app update feed and package download
+        shell: pwsh
+        env:
+          PYTHONPATH: v8
+        run: |
+          python -c "from version import VERSION; from update_client import fetch_manifest, download_package; m=fetch_manifest(); assert m['version']==VERSION, (m['version'], VERSION); p=download_package(m); print('LIVE FEED PASS:', m['version'], p)"
+      
+      - name: Keep release audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReqDocStudio-V8-Release
+          path: |
+            dist/reqdoc-v*-win64.zip
+            dist/v8-latest.json
+          if-no-files-found: error
+          retention-days: 30
