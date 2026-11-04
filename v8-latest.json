@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.8",
+  "version": "8.0.9",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.8-win64.zip",
-    "size": 24722625,
-    "sha256": "3414c09da64c08a31be5b202c827dd17ee78e751d2ba2d5d8ae5d483ace97c73"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.9-win64.zip",
+    "size": 24722335,
+    "sha256": "80393688c95cb298512f76196de4d46a99cc05c85c9a418ff412cee03ea03397"
   },
-  "notes": "修复旧版本退出后 Windows 仍占用程序文件、导致应用内更新失败的问题。包含 V8.0.7 的任务处理、进度分组、文档导入导出及剪贴板插图修复。",
-  "source_commit": "73ab73219db2f8624907c9207dc25c1634a84ac2"
+  "notes": "修复更新后自动重启沿用旧程序的临时目录、导致 Python DLL 加载失败的问题。包含 V8.0.8 的文件占用修复及 V8.0.7 的工作文档改进。",
+  "source_commit": "5e4131e5d53c094fa2c74b34e6f9c770c948f99a"
 }
