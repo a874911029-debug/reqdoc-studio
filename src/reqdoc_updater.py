@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import zipfile
 
-APP_VERSION = "7.5.0"
+APP_VERSION = "7.5.1"
 PUBLIC_OWNER = "a874911029-debug"
 UPDATE_REPO = "reqdoc-studio"
 FEED_URL = f"https://api.github.com/repos/{PUBLIC_OWNER}/{UPDATE_REPO}/releases/latest"
