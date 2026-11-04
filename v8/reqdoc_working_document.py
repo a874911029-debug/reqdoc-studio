@@ -1,4 +1,4 @@
-"""Independent editable working-document workspace for ReqDoc Studio V8.0.5.
+"""Independent editable working-document workspace for ReqDoc Studio V8.0.6.
 
 Original imported files remain immutable in studio_sources/_sources. This module stores
 an independent editable Markdown working copy and keeps task records separate.
@@ -1408,6 +1408,8 @@ def edit_progress_task(self, event=None):
 
 
 def build_settings_page(self):
+    from version import VERSION
+
     page = self.pages["settings"]
     self.page_title(page, "设置与数据", "项目、任务、工作文档和原始资料均保存在本机数据目录。")
     box = ttk.LabelFrame(page, text="数据维护", padding=18)
@@ -1416,6 +1418,21 @@ def build_settings_page(self):
     ttk.Button(box, text="恢复为独立副本", command=lambda: self.guard(self.restore_backup)).pack(anchor="w", pady=5)
     ttk.Button(box, text="打开文档数据目录", command=lambda: self.guard(lambda: self.open_path(self.store.settings.docs_dir))).pack(anchor="w", pady=5)
     ttk.Button(box, text="使用说明", command=lambda: self.guard(self.help)).pack(anchor="w", pady=5)
+
+    update_box = ttk.LabelFrame(page, text="软件更新 · GitHub", padding=12)
+    update_box.pack(fill="x", pady=(10, 0))
+    self.update_status_var = tk.StringVar(value=f"当前版本：V{VERSION} · GitHub 单仓库更新")
+    ttk.Label(update_box, textvariable=self.update_status_var, foreground="#52647B").pack(
+        side="left", fill="x", expand=True
+    )
+    self.update_button = ttk.Button(
+        update_box, text="检查 GitHub 更新",
+        command=lambda: self.guard(self.check_github_update),
+    )
+    self.update_button.pack(side="right")
+    self._update_queue = None
+    self._update_in_progress = False
+    self._update_poll_after_id = None
 
 
 def help_text(self):
@@ -1440,7 +1457,7 @@ def help_text(self):
 
 
 def install(StudioClass, StoreClass):
-    """Install V8.0.5 UI and independent working-document persistence."""
+    """Install V8.0.6 UI and independent working-document persistence."""
     original_store_init = StoreClass.__init__
 
     def store_init(self, settings):
