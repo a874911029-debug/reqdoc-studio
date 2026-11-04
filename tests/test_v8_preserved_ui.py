@@ -11,6 +11,13 @@ from reqdoc.config import Settings
 from reqdoc_studio import CompactStudio, Store
 
 
+def _safe_destroy(widget):
+    try:
+        widget.destroy()
+    except tk.TclError:
+        pass
+
+
 class PreservedUiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -25,7 +32,7 @@ class PreservedUiTests(unittest.TestCase):
     def test_original_four_module_navigation_is_retained(self):
         app = CompactStudio(self.store)
         app.withdraw()
-        self.addCleanup(lambda: app.destroy() if app.winfo_exists() else None)
+        self.addCleanup(_safe_destroy, app)
         self.assertEqual(
             CompactStudio.NAV_ITEMS,
             [
@@ -62,7 +69,7 @@ class PreservedUiTests(unittest.TestCase):
         app.destroy()
         reopened = CompactStudio(Store(self.settings))
         reopened.withdraw()
-        self.addCleanup(lambda: reopened.destroy() if reopened.winfo_exists() else None)
+        self.addCleanup(_safe_destroy, reopened)
         reopened.load_doc(self.document.key)
         self.assertEqual(self.store.service.get_requirement(rows[0].id).content,
                          "独立编辑的处理结果正文")
