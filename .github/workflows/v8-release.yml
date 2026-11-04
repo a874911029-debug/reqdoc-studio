@@ -141,7 +141,7 @@ jobs:
         env:
           PYTHONPATH: v8
         run: |
-          python -c "from version import VERSION; from update_client import fetch_manifest, download_package; m=fetch_manifest(); assert m['version']==VERSION, (m['version'], VERSION); p=download_package(m); print('LIVE FEED PASS:', m['version'], p)"
+          python scripts/verify_v8_feed.py
       
       - name: Keep release audit artifact
         uses: actions/upload-artifact@v4
