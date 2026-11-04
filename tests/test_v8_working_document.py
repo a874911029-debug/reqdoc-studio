@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 import tempfile
 from contextlib import contextmanager
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from reqdoc_working_document import (
+    build_settings_page,
     delete_working_documents,
     document_to_task_items,
     ensure_working_schema,
@@ -50,6 +52,12 @@ class WorkingDocumentTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_settings_page_keeps_in_app_github_update_control(self):
+        source = inspect.getsource(build_settings_page)
+        self.assertIn("检查 GitHub 更新", source)
+        self.assertIn("self.check_github_update", source)
+        self.assertIn("self.update_button", source)
 
     def test_working_copy_is_separate_from_archived_source(self):
         write_working_document(self.store, "doc-1", "editable copy", "manual")
