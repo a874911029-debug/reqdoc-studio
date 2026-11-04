@@ -1,7 +1,7 @@
 name: ReqDoc V8 Windows candidate
 on:
   push:
-    branches: [feature/reqdoc-v8-new-only]
+    branches: [feature/reqdoc-v8-new-only, feature/reqdoc-v8-5-working-document]
   pull_request:
     branches: [main]
   workflow_dispatch:

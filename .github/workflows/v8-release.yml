@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/reqdoc-v8-new-only
+      - feature/reqdoc-v8-5-working-document
     paths:
       - "v8/version.py"
   workflow_dispatch:

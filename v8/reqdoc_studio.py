@@ -1307,11 +1307,11 @@ class CompactStudioV4(Studio):
         self.document_list.bind('<Double-1>',lambda e:self.guard(self.open_selected_document))
 
     def build_import_page(self):
-        page=self.pages['import'];self.page_title(page,'导入中心','导入不再直接写入当前文档。每次导入都会先解析、预览、选择目标文档并确认。')
+        page=self.pages['import'];self.page_title(page,'导入中心','导入文件后选择形成可编辑表格/文档，或直接形成任务；原始文件只读归档。')
         panel=ttk.LabelFrame(page,text='资料导入',padding=18);panel.pack(fill='x',pady=(0,14))
         ttk.Label(panel,text='支持格式：Word（.docx）、Markdown（.md / .markdown）、文本（.txt）',font=('Microsoft YaHei',10)).pack(anchor='w',pady=(0,8))
-        ttk.Label(panel,text='支持一次选择多份资料；预览中可以全选、删除选中任务、修改标题、章节和正文。',foreground='#64748B').pack(anchor='w',pady=(0,12))
-        ttk.Button(panel,text='选择资料并开始预览',command=lambda:self.guard(self.import_dialog)).pack(anchor='w')
+        ttk.Label(panel,text='支持一次选择多份资料；导入时选择形成工作文档/表格，或从内容生成任务。',foreground='#64748B').pack(anchor='w',pady=(0,12))
+        ttk.Button(panel,text='选择资料并导入',command=lambda:self.guard(self.import_dialog)).pack(anchor='w')
         ttk.Label(page,text='最近归档的原始资料',font=('Microsoft YaHei',12,'bold')).pack(anchor='w',pady=(8,6))
         self.import_sources=ttk.Treeview(page,columns=('name','time'),show='headings',height=10)
         self.import_sources.heading('name',text='原始文件');self.import_sources.heading('time',text='归档时间')
@@ -1915,7 +1915,7 @@ class CompactStudio(CompactStudioV4):
         except Exception:pass
 
     def build(self):
-        self.title('文档工作台 · ReqDoc Studio V8.0.4')
+        self.title('文档工作台 · ReqDoc Studio V8.0.5')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
@@ -1968,13 +1968,13 @@ class CompactStudio(CompactStudioV4):
             total+=bridge.install_on(self,include_parent=True)
             if not total:raise RuntimeError('未能注册任何可拖入区域。')
             self._file_drop=bridge
-            self.status.set('可将 docx、txt、md 文件拖入窗口自动预览。')
+            self.status.set('可将 docx、txt、md 文件拖入窗口，选择形成工作文档或任务。')
             return True
         except Exception as exc:
             try:bridge.close()
             except Exception:pass
             logging.warning('Explorer drag/drop unavailable: %s',exc)
-            self.status.set('文件拖放暂不可用，可点击“导入资料”；详情请查看程序日志。')
+            self.status.set('文件拖放暂不可用，可点击“导入文件”；详情请查看程序日志。')
             return False
 
     def _accept_dropped_files(self,paths,errors):
@@ -3541,6 +3541,8 @@ def single_instance(home):
     return handle
 
 def main():
+    from reqdoc_working_document import install as install_working_document
+    install_working_document(CompactStudio, Store)
     from reqdoc.bootstrap import prepare_runtime
     prepare_runtime();settings=Settings.from_env();settings.ensure_directories()
     logging.basicConfig(filename=str(settings.home/'studio.log'),encoding='utf-8',level=logging.INFO)
