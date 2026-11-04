@@ -10,7 +10,7 @@ except Exception:
     Image = ImageTk = None
 
 
-_IMAGE = re.compile(r"!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 
 class MarkdownView(ttk.Frame):
