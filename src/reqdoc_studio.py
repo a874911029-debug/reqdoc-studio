@@ -15,7 +15,7 @@ from reqdoc.gui.theme import configure_theme
 from reqdoc.gui.widgets import MarkdownView
 from reqdoc_source_table import tables_in, is_task_table, table_to_task_items
 
-VERSION = 'Studio 简约测试版 7.5.1'
+VERSION = 'Studio 简约测试版 7.5.2'
 def stamp(): return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 def digest(data): return hashlib.sha256(data).hexdigest()
 def write_atomic(path, data):
@@ -1355,8 +1355,9 @@ class CompactStudioV4(Studio):
         self.done_var.trace_add('write',self.changed)
         editactions=ttk.Frame(editor);editactions.pack(fill='x',pady=(8,0))
         ttk.Button(editactions,text='保存任务',command=lambda:self.guard(self.save_task)).pack(side='left',padx=(0,6))
-        ttk.Button(editactions,text='插入图片',command=lambda:self.guard(self.add_image)).pack(side='left',padx=(0,6))
-        ttk.Button(editactions,text='粘贴图片',command=lambda:self.guard(self.paste_image)).pack(side='left',padx=(0,6))
+        ttk.Button(editactions,text='插入图片到光标处',command=lambda:self.guard(self.add_image)).pack(side='left',padx=(0,6))
+        ttk.Button(editactions,text='粘贴图片到光标处',command=lambda:self.guard(self.paste_image)).pack(side='left',padx=(0,6))
+        ttk.Button(editactions,text='预览正文',command=lambda:self.guard(self.preview_task_body)).pack(side='left',padx=(0,6))
         ttk.Button(editactions,text='取消本次编辑',command=lambda:self.guard(self.cancel_edit)).pack(side='right')
 
     def build_progress_page(self):
@@ -1884,7 +1885,7 @@ class CompactStudio(CompactStudioV4):
         except Exception:pass
 
     def build(self):
-        self.title('reqdoc · 文档与任务工作台 — 测试版 7.5.1')
+        self.title('reqdoc · 文档与任务工作台 — 测试版 7.5.2')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
@@ -2025,7 +2026,7 @@ class CompactStudio(CompactStudioV4):
         page=self.pages['tasks']
         self.tasks_heading=ttk.Label(page,text='任务整理',font=('Microsoft YaHei',17,'bold'))
         self.tasks_heading.pack(anchor='w',pady=(0,3))
-        self.tasks_subtitle=ttk.Label(page,text='先独立选择项目和文档。左侧阅读原始资料，右侧整理任务并直接标记完成。',foreground='#64748B')
+        self.tasks_subtitle=ttk.Label(page,text='这里显示软件整理后的任务。选择任务后直接编辑；原始资料只作为只读参考。',foreground='#64748B')
         self.tasks_subtitle.pack(anchor='w',pady=(0,8))
 
         selectors=ttk.LabelFrame(page,text='当前处理对象',padding=8)
@@ -2042,11 +2043,12 @@ class CompactStudio(CompactStudioV4):
         self.task_document_box.bind('<<ComboboxSelected>>',self.on_task_document_selected)
         self.task_doc_map={};self._task_selector_loading=False;self._task_source_loading=False
         self.selected_source_id=None;self._task_sashes_initialized=False
-        self.editor_open=False;self.source_panel_visible=True
+        self.editor_open=False;self.source_panel_visible=False
         docactions=ttk.Frame(page);docactions.pack(fill='x',pady=(0,6))
         ttk.Button(docactions,text='导入资料',command=lambda:self.guard(self.import_dialog)).pack(side='left',padx=(0,6))
         ttk.Button(docactions,text='查看文档汇总',command=lambda:self.guard(self.show_preview)).pack(side='left',padx=(0,6))
-        ttk.Button(docactions,text='切换原文显示',command=lambda:self.guard(self.toggle_source_panel)).pack(side='left',padx=(0,6))
+        self.source_toggle_button=ttk.Button(docactions,text='查看原始资料',command=lambda:self.guard(self.toggle_source_panel))
+        self.source_toggle_button.pack(side='left',padx=(0,6))
         docmenu=ttk.Menubutton(docactions,text='文档操作 ▾')
         menu=tk.Menu(docmenu,tearoff=False)
         menu.add_command(label='导出 Word',command=lambda:self.guard(lambda:self.export('docx')))
@@ -2058,8 +2060,7 @@ class CompactStudio(CompactStudioV4):
 
         self.tasks_split=ttk.Panedwindow(page,orient='horizontal')
         self.tasks_split.pack(fill='both',expand=True)
-        source_panel=ttk.LabelFrame(self.tasks_split,text='原始文档 / 资料',padding=7);self.task_source_panel=source_panel
-        self.tasks_split.add(source_panel,weight=2)
+        source_panel=ttk.LabelFrame(self.tasks_split,text='原始资料（只读参考）',padding=7);self.task_source_panel=source_panel
         sourcebar=ttk.Frame(source_panel);sourcebar.pack(fill='x',pady=(0,6))
         self.task_source_var=tk.StringVar(value='')
         self.task_source_box=ttk.Combobox(sourcebar,textvariable=self.task_source_var,state='readonly')
@@ -2069,7 +2070,8 @@ class CompactStudio(CompactStudioV4):
         self.task_source_open.pack(side='left')
         source_actions=ttk.Frame(source_panel);source_actions.pack(fill='x',pady=(0,5))
         self.task_source_edit=ttk.Button(source_actions,text='编辑资料 / 表格',command=lambda:self.guard(self.edit_task_source),state='disabled')
-        self.task_source_edit.pack(side='left',padx=(0,6))
+        # Original source material is deliberately not exposed as an editable object.
+        # The processed task records below are the editable working result.
         self.task_table_to_tasks_button=ttk.Button(source_actions,text='表格行转任务',command=lambda:self.guard(self.table_rows_to_tasks),state='disabled')
         self.task_table_to_tasks_button.pack(side='left')
         self.task_source_meta=ttk.Label(source_panel,text='选择文档后显示原始资料。',foreground='#64748B')
@@ -2095,7 +2097,7 @@ class CompactStudio(CompactStudioV4):
         self.task_table_grid.bind('<Control-c>',lambda e:self.guard(lambda:self.copy_table_rows(self.task_table_grid)) or 'break')
         self.task_table_grid.bind('<Control-C>',lambda e:self.guard(lambda:self.copy_table_rows(self.task_table_grid)) or 'break')
         self.task_source_book.tab(self.task_table_page,state='disabled')
-        ttk.Label(source_panel,text='原件只读；点击“编辑资料”修改工作副本，支持表格单元格。',foreground='#64748B',wraplength=520).pack(anchor='w',pady=(5,0))
+        ttk.Label(source_panel,text='来源文件只读。请在任务列表中编辑整理结果；表格行可转换为独立任务。',foreground='#64748B',wraplength=520).pack(anchor='w',pady=(5,0))
 
         right=ttk.Frame(self.tasks_split);self.task_right_panel=right;self.tasks_split.add(right,weight=4)
         self.tasks_context=ttk.Label(right,text='尚未选择文档。请使用上方项目和文档选择器。',foreground='#64748B')
@@ -2103,7 +2105,7 @@ class CompactStudio(CompactStudioV4):
         task_split=ttk.Panedwindow(right,orient='vertical');task_split.pack(fill='both',expand=True)
         self.task_vertical_split=task_split
 
-        task_list_panel=ttk.LabelFrame(task_split,text='任务列表',padding=7);self.task_list_panel=task_list_panel;task_split.add(task_list_panel,weight=3)
+        task_list_panel=ttk.LabelFrame(task_split,text='整理结果 / 任务列表',padding=7);self.task_list_panel=task_list_panel;task_split.add(task_list_panel,weight=3)
         toolbar=ttk.Frame(task_list_panel);toolbar.pack(fill='x',pady=(0,6))
         self.query=tk.StringVar()
         ttk.Entry(toolbar,textvariable=self.query).pack(side='left',fill='x',expand=True,padx=(0,7))
@@ -2157,7 +2159,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Button(secondary,text='清空回收站',command=lambda:self.guard(self.empty_task_trash)).pack(side='left',padx=2,pady=2)
         self.count=ttk.Label(secondary,text='0 条任务');self.count.pack(side='right',padx=3)
 
-        editor=ttk.LabelFrame(task_split,text='任务编辑 / 完成状态',padding=10);self.task_editor_panel=editor;task_split.add(editor,weight=2)
+        editor=ttk.LabelFrame(task_split,text='整理结果 · 任务编辑',padding=10);self.task_editor_panel=editor;task_split.add(editor,weight=2)
         self.editor=editor
         self.editlabel=ttk.Label(editor,text='新任务',font=('Microsoft YaHei',11,'bold'));self.editlabel.pack(anchor='w',pady=(0,5))
         ttk.Label(editor,text='标题').pack(anchor='w')
@@ -2173,6 +2175,7 @@ class CompactStudio(CompactStudioV4):
         self.done_var=tk.BooleanVar(value=False)
         ttk.Checkbutton(editor,text='此任务已完成',variable=self.done_var,command=self.changed).pack(anchor='w',pady=(0,5))
         ttk.Label(editor,text='任务正文').pack(anchor='w')
+        ttk.Label(editor,text='图片插入位置：先在正文中单击放置光标，再使用下方图片按钮。',foreground='#64748B').pack(anchor='w',pady=(0,4))
         self.body=self.text_box(editor);self.body.bind('<<Modified>>',self.modified)
         self.body.bind('<Control-v>',self.paste_event);self.body.bind('<Control-V>',self.paste_event)
         for var in (self.titlevar,self.chaptervar):var.trace_add('write',self.changed)
@@ -2182,7 +2185,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Button(editactions,text='插入图片',command=lambda:self.guard(self.add_image)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='粘贴图片',command=lambda:self.guard(self.paste_image)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='取消本次编辑',command=lambda:self.guard(self.cancel_edit)).pack(side='right')
-        # The ordinary state is source + task list. An editor is opened only on demand.
+        # The ordinary state is the processed task list. Source material is opt-in.
         task_split.forget(editor)
 
     def position_task_sashes(self):
@@ -2202,7 +2205,9 @@ class CompactStudio(CompactStudioV4):
 
     def position_editor_sash(self):
         if self.editor_open and self.task_vertical_split.winfo_height()>250:
-            self.task_vertical_split.sashpos(0,int(self.task_vertical_split.winfo_height()*0.50))
+            # Keep enough room for both the task list and the editor on ordinary screens.
+            self.task_vertical_split.sashpos(0,int(self.task_vertical_split.winfo_height()*0.43))
+            self.body.focus_set()
 
     def hide_editor(self):
         if self.editor_open:
@@ -2214,10 +2219,13 @@ class CompactStudio(CompactStudioV4):
         if self.source_panel_visible:
             self.tasks_split.forget(self.task_source_panel)
             self.source_panel_visible=False
+            self.source_toggle_button.configure(text='查看原始资料')
         else:
-            self.tasks_split.insert(0,self.task_source_panel,weight=2)
+            self.tasks_split.insert(0,self.task_source_panel,weight=1)
             self.source_panel_visible=True
-            self._source_sash_after_id=self.after_idle(lambda:self.tasks_split.sashpos(0,int(self.tasks_split.winfo_width()*0.39)))
+            self.source_toggle_button.configure(text='隐藏原始资料')
+            # Reserve most of the width for the processed task workspace.
+            self._source_sash_after_id=self.after(80,lambda:self.tasks_split.sashpos(0,int(self.tasks_split.winfo_width()*0.28)))
 
     def new_task(self):
         self.require_doc()
@@ -2289,36 +2297,34 @@ class CompactStudio(CompactStudioV4):
         self.keep_draft();self.load_editor(rid);self.show_page('tasks')
         self.show_editor();self.body.focus_set()
 
-    def _prepare_image_edit(self, at_end=True):
-        """Bind image insertion to the currently focused task, never a stale editor."""
+    def _prepare_image_edit(self):
+        """Prepare the selected task editor while preserving the text insertion mark."""
         self.require_doc()
         rid=self.focused_task_id()
         if rid is not None:
             if self.rid != rid:
                 self.keep_draft()
                 self.load_editor(rid)
+                # A newly loaded task starts at the end; users can click elsewhere first.
+                self.body.mark_set('insert','end-1c')
         elif self.editor_open:
-            # Keep the task already being edited when the list selection is cleared.
+            # The open new-task editor is the explicit target; keep its caret.
             pass
-        elif len(set(self.checked_ids)&set(self.visible_ids))>1:
-            raise ValueError('当前勾选了多条任务。请单击要添加图片的那一行，或只勾选一条任务。')
         else:
-            self.new_task()
-        self.show_page('tasks');self.show_editor()
-        if at_end:
-            self.body.mark_set('insert','end-1c')
-            self.body.see('insert')
-        self.body.focus_set()
+            raise ValueError('请先选择一条任务，或点击「新增任务」打开任务编辑器。')
+        self.show_page('tasks');self.show_editor();self.body.focus_set()
         return self.rid
 
     def add_image(self):
         self.require_doc()
-        # Open the picker first: cancelling must not create an empty task/editor.
+        if self.focused_task_id() is None and not (self.editor_open and self.rid is None):
+            raise ValueError('请先选择一条任务，或点击「新增任务」打开任务编辑器。')
+        # Open the picker first; cancelling does not modify the task or its caret.
         path=filedialog.askopenfilename(parent=self,filetypes=[('图片','*.png *.jpg *.jpeg *.webp *.bmp *.gif')])
         if not path:return False
-        self._prepare_image_edit(at_end=True)
+        self._prepare_image_edit()
         result=Studio.insert_image(self,Path(path))
-        if result:self.status.set('图片已加入当前任务编辑内容；请点击「保存任务」保存。')
+        if result:self.status.set('图片已插入正文光标位置；点击「保存任务」保存，可用「预览正文」检查图片位置。')
         return result
 
     def _insert_clipboard_images(self,data,silent=False,at_end=False):
@@ -2349,9 +2355,11 @@ class CompactStudio(CompactStudioV4):
         if not has_image:
             if not silent:messagebox.showinfo('粘贴图片','剪贴板中没有可用图片。',parent=self)
             return False
-        self._prepare_image_edit(at_end=True)
-        result=self._insert_clipboard_images(data,silent=True,at_end=True)
-        if result:self.status.set('剪贴板图片已加入当前任务编辑内容；请点击「保存任务」保存。')
+        if self.focused_task_id() is None and not (self.editor_open and self.rid is None):
+            raise ValueError('请先选择一条任务，或点击「新增任务」打开任务编辑器。')
+        self._prepare_image_edit()
+        result=self._insert_clipboard_images(data,silent=True,at_end=False)
+        if result:self.status.set('剪贴板图片已插入正文光标位置；点击「保存任务」保存。')
         return result
 
     def paste_event(self,event=None):
@@ -2366,6 +2374,17 @@ class CompactStudio(CompactStudioV4):
             logging.exception('Paste image failed')
             self.status.set('粘贴图片失败：'+str(exc))
         return None
+
+    def preview_task_body(self):
+        """Render the current task Markdown, including images, in a read-only preview."""
+        self.require_doc()
+        content=self.body.get('1.0','end-1c')
+        win=tk.Toplevel(self);win.title('任务正文预览 — '+(self.titlevar.get().strip() or '未命名任务'))
+        self.sized_dialog(win,900,720)
+        view=MarkdownView(win,self.theme);view.pack(fill='both',expand=True,padx=10,pady=10)
+        view.set_base_dir(self.s.document_folder(self.key))
+        view.set_markdown(content or '（当前任务正文为空）')
+        return win
 
     def save_task(self):
         result=CompactStudioV4.save_task(self)
@@ -2454,8 +2473,8 @@ class CompactStudio(CompactStudioV4):
             self.task_source_box.configure(values=labels,state='readonly');self.task_source_var.set(selected)
             row=next(r for r in sources if r[0]==self.selected_source_id)
             self.task_source_view.set_base_dir(self.s.document_folder(self.key));self.task_source_view.set_markdown(row[3])
-            self.task_source_meta.configure(text=f'原始资料：{row[1]} · 可编辑工作副本（原件保留）')
-            self.task_source_open.configure(state='normal');self.task_source_edit.configure(state='normal')
+            self.task_source_meta.configure(text=f'来源文件：{row[1]} · 提取文本只读预览（原件已归档）')
+            self.task_source_open.configure(state='normal');self.task_source_edit.configure(state='disabled')
             self._refresh_source_table(row[3])
         else:
             self.selected_source_id=None;self.task_source_map={}
@@ -2524,18 +2543,7 @@ class CompactStudio(CompactStudioV4):
         return self._table_to_clipboard(table_to_markdown(headers,rows))
 
     def edit_task_source(self):
-        if not self.key or not self.selected_source_id:
-            raise ValueError('请先选择一份已导入的资料。')
-        source_id=self.selected_source_id;doc_key=self.key
-        row=next((r for r in self.store.sources(doc_key) if r[0]==source_id),None)
-        if row is None:raise ValueError('无法找到当前资料。')
-        from reqdoc_source_editor import SourceEditDialog
-        def save_text(content):
-            self.store.save_source_text(doc_key,source_id,content)
-            if self.key==doc_key:
-                self.refresh_task_source()
-                self.status.set('已保存资料修改稿，原始文件保持不变。')
-        self.source_edit_dialog=SourceEditDialog(self,row[1],row[3],save_text)
+        raise ValueError('原始资料为只读归档，不在这里编辑。请在任务列表中编辑软件整理后的任务。')
 
     def table_rows_to_tasks(self):
         if not self.key or not self.selected_source_id:
