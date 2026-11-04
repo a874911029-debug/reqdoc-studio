@@ -3395,9 +3395,14 @@ class CompactStudio(CompactStudioV4):
     【局限】Windows 原生窗口与真实用户数据库迁移尚需实机验收。本版仍保留部分旧 UI 引擎的兼容类，程序与用户数据尚未全面迁移为固定目录；不要删除最后一份有效的数据文件夹。""")
 
     def close(self):
+        if getattr(self,'_closing',False):return
         try:self.keep_draft();self.persist_notes()
         except Exception as exc:
-            if not messagebox.askyesno('保存失败',str(exc)+'\n仍然退出吗？',parent=self):return
+            try:
+                if not messagebox.askyesno('保存失败',str(exc)+'\n仍然退出吗？',parent=self):return
+            except tk.TclError:pass
+        self._closing=True
+        self._update_in_progress=False
         for handle in ('_autosave_after_id','_refresh_tree_after_id','_task_sash_after_id',
                        '_editor_sash_after_id','_source_sash_after_id','_update_poll_after_id','_drop_after_id'):
             task=getattr(self,handle,None)
@@ -3407,7 +3412,8 @@ class CompactStudio(CompactStudioV4):
         if getattr(self,'_file_drop',None):
             try:self._file_drop.close()
             except Exception:pass
-        self.destroy()
+        try:self.destroy()
+        except tk.TclError:pass
 
 
 # ---------------------------------------------------------------------------
