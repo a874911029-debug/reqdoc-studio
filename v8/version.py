@@ -1,2 +1,2 @@
-VERSION = "8.0.8"
+VERSION = "8.0.9"
 PRODUCT_NAME = "ReqDoc Studio"

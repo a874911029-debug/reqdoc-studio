@@ -53,6 +53,9 @@ $stage = Join-Path $work 'stage'
 $backup = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 $installed = New-Object 'System.Collections.Generic.List[string]'
 $replacement = @{}
+# The original executable's one-file extraction is removed on exit. Both the
+# new version and a rollback must start as independent PyInstaller instances.
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
 try {
   $InstallDir=[IO.Path]::GetFullPath($InstallDir)
   $Package=[IO.Path]::GetFullPath($Package)
