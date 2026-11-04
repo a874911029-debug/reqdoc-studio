@@ -1,7 +1,7 @@
 # ReqDoc Studio V8 only. No legacy migration and no access to user workspace files.
 param(
   [Parameter(Mandatory=$true)][string]$InstallDir,
-  [Parameter(Mandatory=$true)][string]$Package,
+  [Parameter(Mandatory=$true)][Alias('PackagePath')][string]$Package,
   [Parameter(Mandatory=$true)][int]$AppPid,
   [Parameter(Mandatory=$true)][string]$Sha256
 )
