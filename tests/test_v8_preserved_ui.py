@@ -59,8 +59,11 @@ class PreservedUiTests(unittest.TestCase):
         self.assertEqual(rows[0].content, "独立编辑的处理结果正文")
         self.assertTrue(self.store.service.document_path(self.document.key).is_file())
 
-        app.load_doc(None)
-        app.load_doc(self.document.key)
+        app.destroy()
+        reopened = CompactStudio(Store(self.settings))
+        reopened.withdraw()
+        self.addCleanup(lambda: reopened.destroy() if reopened.winfo_exists() else None)
+        reopened.load_doc(self.document.key)
         self.assertEqual(self.store.service.get_requirement(rows[0].id).content,
                          "独立编辑的处理结果正文")
 
