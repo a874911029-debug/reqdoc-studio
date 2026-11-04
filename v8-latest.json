@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.7",
+  "version": "8.0.8",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.7-win64.zip",
-    "size": 24722022,
-    "sha256": "0f778bf733f0e94f737947c9867b164aa20b3ba3f60f0434c59624bfba615114"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.8-win64.zip",
+    "size": 24722625,
+    "sha256": "3414c09da64c08a31be5b202c827dd17ee78e751d2ba2d5d8ae5d483ace97c73"
   },
-  "notes": "修复任务处理页和任务弹窗；任务变更实时同步到工作文档，进度分组显示项目下的文档。恢复文档导入和导出，修复 Word 表格转任务，并支持剪贴板插图、可空描述和文档内缩略图。",
-  "source_commit": "3a14c60fc865587be4dfd23e7be037067283c716"
+  "notes": "修复旧版本退出后 Windows 仍占用程序文件、导致应用内更新失败的问题。包含 V8.0.7 的任务处理、进度分组、文档导入导出及剪贴板插图修复。",
+  "source_commit": "73ab73219db2f8624907c9207dc25c1634a84ac2"
 }
