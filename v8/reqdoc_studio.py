@@ -15,7 +15,7 @@ from reqdoc.gui.theme import configure_theme
 from reqdoc.gui.widgets import MarkdownView
 from reqdoc_source_table import tables_in, is_task_table, table_to_task_items
 
-VERSION = 'ReqDoc Studio V8.0.4'
+VERSION = 'ReqDoc Studio V8.0.5'
 def stamp(): return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 def digest(data): return hashlib.sha256(data).hexdigest()
 def write_atomic(path, data):
@@ -2703,7 +2703,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Label(page,text='当前数据位置：'+str(Path(self.store.settings.home).parent),foreground='#52647B',wraplength=980,justify='left').pack(anchor='w',pady=(8,3))
         ttk.Label(page,text='重要：V8 用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。软件更新不覆盖该目录；卸载或清理前请先备份。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
         update_box=ttk.LabelFrame(page,text='软件更新 · GitHub',padding=12);update_box.pack(fill='x',pady=(10,0))
-        self.update_status_var=tk.StringVar(value='当前版本：V8.0.4 · GitHub 单仓库更新')
+        self.update_status_var=tk.StringVar(value='当前版本：V8.0.5 · GitHub 单仓库更新')
         ttk.Label(update_box,textvariable=self.update_status_var,foreground='#52647B').pack(side='left',fill='x',expand=True)
         self.update_button=ttk.Button(update_box,text='检查 GitHub 更新',command=lambda:self.guard(self.check_github_update))
         self.update_button.pack(side='right')
@@ -2728,7 +2728,7 @@ class CompactStudio(CompactStudioV4):
         threading.Thread(target=worker,name='reqdoc-update-check',daemon=True).start()
         self._update_poll_after_id=self.after(180,self._poll_github_update)
 
-    def _poll_github_update(self):
+    def _poll_github_update_impl(self):
         import queue
         if getattr(self,'_closing',False):return
         self._update_poll_after_id=None
@@ -2770,6 +2770,28 @@ class CompactStudio(CompactStudioV4):
             except tk.TclError:
                 self._closing=True
                 self._update_in_progress=False
+
+    def _poll_github_update(self):
+        """Guard the asynchronous updater callback against a destroyed Tk root."""
+        if getattr(self, '_closing', False):
+            return
+        try:
+            self._poll_github_update_impl()
+        except tk.TclError:
+            self._closing = True
+            self._update_in_progress = False
+            self._update_poll_after_id = None
+        except Exception as exc:
+            logging.exception('GitHub update polling failed')
+            if getattr(self, '_closing', False):
+                return
+            self._update_in_progress = False
+            self._update_poll_after_id = None
+            try:
+                self.update_button.configure(state='normal')
+                self.update_status_var.set('更新检查异常：' + str(exc)[:180])
+            except tk.TclError:
+                self._closing = True
 
     def _begin_github_download(self,manifest):
         import queue,threading
@@ -3404,7 +3426,7 @@ class CompactStudio(CompactStudioV4):
         messagebox.showinfo('备份迁移完成',f'已迁移 {result["projects"]} 个项目、{result["documents"]} 份文档。\n\n迁移前备份：\n{result["backup"]}',parent=self)
 
     def help(self):
-        self.show_text('ReqDoc Studio V8.0.4 使用说明',"""【项目与文档】按住项目或文档行拖动可调整同级顺序。选中项目后新建文档；新建后仍停留在项目与文档页，双击文档进入任务处理。
+        self.show_text('ReqDoc Studio V8.0.5 使用说明',"""【项目与文档】按住项目或文档行拖动可调整同级顺序。选中项目后新建文档；新建后仍停留在项目与文档页，双击文档进入任务处理。
 
 【任务处理】默认同时显示文档预览、任务列表和任务编辑器。左侧显示只读原始资料；没有原始资料时显示当前文档汇总。右侧可编辑整理后的任务。
 

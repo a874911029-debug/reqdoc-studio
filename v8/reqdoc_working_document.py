@@ -131,6 +131,95 @@ def _install_text_selection(widget):
     widget.bind("<Control-C>", lambda event, w=widget: (_copy_selection(w), "break")[1])
 
 
+
+def _readonly_text_menu(widget, event):
+    menu = tk.Menu(widget, tearoff=False)
+    try:
+        has_selection = bool(widget.tag_ranges("sel"))
+    except tk.TclError:
+        has_selection = False
+    menu.add_command(
+        label="复制选中内容",
+        state="normal" if has_selection else "disabled",
+        command=lambda: _copy_selection(widget),
+    )
+    menu.add_command(
+        label="全选",
+        command=lambda: (widget.tag_add("sel", "1.0", "end-1c"), widget.focus_set()),
+    )
+    menu.tk_popup(event.x_root, event.y_root)
+    return "break"
+
+
+def task_list_right_click(self, event):
+    item = self.list.identify_row(event.y)
+    if item:
+        if item not in self.list.selection():
+            self.list.selection_set(item)
+        self.list.focus(item)
+        self.on_task_selected()
+    return "break"
+
+
+def refresh_task_detail(self):
+    if not hasattr(self, "task_detail"):
+        return
+    selected = list(self.list.selection()) if hasattr(self, "list") else []
+    lines = []
+    for item in selected:
+        if not str(item).isdigit():
+            continue
+        try:
+            row = self.s.get_requirement(int(item))
+        except Exception:
+            continue
+        lines.extend([
+            row.title or "（无标题）",
+            f"所属分组：{row.section or '未分类'}    状态：{'已完成' if row.done else '未完成'}",
+            "",
+            row.content.strip() or "（无任务详情）",
+            "─" * 48,
+            "",
+        ])
+    self.task_detail.configure(state="normal")
+    self.task_detail.delete("1.0", "end")
+    self.task_detail.insert("1.0", "\n".join(lines) if lines else "选择任务后，这里显示可自由框选和复制的任务明细。")
+    self.task_detail.configure(state="disabled")
+
+
+def build_import_page(self):
+    page = self.pages["import"]
+    self.page_title(
+        page, "导入文件",
+        "导入后生成独立可编辑工作文档；原始文件只读归档，不提供原件预览或编辑。",
+    )
+    panel = ttk.LabelFrame(page, text="导入资料", padding=18)
+    panel.pack(fill="x", pady=(0, 12))
+    ttk.Label(
+        panel,
+        text="支持 Word（.docx）、Markdown（.md / .markdown）和文本（.txt），可一次导入多份。",
+        font=("Microsoft YaHei", 10),
+    ).pack(anchor="w", pady=(0, 8))
+    ttk.Label(
+        panel,
+        text="导入后选择：形成可编辑工作文档/表格，或直接从内容生成任务。两种方式都会保留独立工作文档。",
+        foreground="#64748B", wraplength=900, justify="left",
+    ).pack(anchor="w", pady=(0, 12))
+    ttk.Button(
+        panel, text="选择文件并导入",
+        command=lambda: self.guard(self.import_dialog),
+    ).pack(anchor="w")
+    self.import_hint = ttk.Label(
+        page, text="原始文件会自动只读归档；编辑请在“任务处理”的工作文档区完成。",
+        foreground="#64748B",
+    )
+    self.import_hint.pack(anchor="w", pady=(8, 0))
+
+
+def refresh_import_page(self):
+    return None
+
+
 def build_home_page(self):
     page = self.pages["home"]
     self.heading = ttk.Label(page, text="选择文档，开始整理", font=("Microsoft YaHei", 18, "bold"))
@@ -213,9 +302,9 @@ def build_tasks_page(self):
     for label, command in [
         ("保存文档", self.save_working_document),
         ("转成任务", self.convert_working_document),
+        ("编辑表格", self.edit_working_table),
         ("添加图片", self.add_working_image),
         ("粘贴图片", self.paste_working_image),
-        ("预览", self.preview_working_document),
     ]:
         ttk.Button(workbar, text=label, command=lambda fn=command: self.guard(fn)).pack(
             side="left", padx=(0, 5), pady=2
@@ -252,7 +341,16 @@ def build_tasks_page(self):
     self.tasks_split.add(right, weight=2)
     self.tasks_context = ttk.Label(right, text="尚未选择文档。", foreground="#64748B")
     self.tasks_context.pack(anchor="w", pady=(0, 5))
-    searchbar = ttk.Frame(right)
+    self.task_right_split = ttk.Panedwindow(right, orient="vertical")
+    self.task_right_split.pack(fill="both", expand=True)
+    task_list_panel = ttk.LabelFrame(self.task_right_split, text="任务列表", padding=6)
+    task_detail_panel = ttk.LabelFrame(
+        self.task_right_split, text="任务明细（可自由框选、右键复制）", padding=6
+    )
+    self.task_right_split.add(task_list_panel, weight=3)
+    self.task_right_split.add(task_detail_panel, weight=2)
+
+    searchbar = ttk.Frame(task_list_panel)
     searchbar.pack(fill="x", pady=(0, 5))
     self.query = tk.StringVar()
     ttk.Entry(searchbar, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=(0, 6))
@@ -265,7 +363,7 @@ def build_tasks_page(self):
     self.filter_box.bind("<<ComboboxSelected>>", lambda event: (self.checked_ids.clear(), self.refresh_tasks()))
     self.query.trace_add("write", lambda *args: (self.checked_ids.clear(), self.refresh_tasks()))
 
-    primary = ttk.Frame(right)
+    primary = ttk.Frame(task_list_panel)
     primary.pack(fill="x", pady=(0, 5))
     for label, command in [
         ("＋ 新增任务", self.new_task),
@@ -275,7 +373,7 @@ def build_tasks_page(self):
         ttk.Button(primary, text=label, command=lambda fn=command: self.guard(fn)).pack(
             side="left", padx=(0, 5), pady=2
         )
-    list_frame = ttk.Frame(right)
+    list_frame = ttk.Frame(task_list_panel)
     list_frame.pack(fill="both", expand=True)
     self.list = ttk.Treeview(
         list_frame, columns=("check", "state", "title", "chapter"),
@@ -300,8 +398,9 @@ def build_tasks_page(self):
     self.list.bind("<Button-1>", self.task_cell_click)
     self.list.bind("<<TreeviewSelect>>", self.on_task_selected)
     self.list.bind("<Double-1>", lambda event: self.guard(self.edit_selected))
-    self.list.bind("<Button-3>", self.task_list_context_menu)
-    actions = ttk.Frame(right)
+    self.list.bind("<Button-3>", self.task_list_right_click)
+
+    actions = ttk.Frame(task_list_panel)
     actions.pack(fill="x", pady=(5, 0))
     for label, command in [
         ("全选/取消", self.select_all_visible),
@@ -313,18 +412,45 @@ def build_tasks_page(self):
         ttk.Button(actions, text=label, command=lambda fn=command: self.guard(fn)).pack(
             side="left", padx=(0, 4), pady=2
         )
-    self.count = ttk.Label(right, text="0 条任务")
+    more = ttk.Menubutton(task_list_panel, text="更多任务操作 ▾")
+    more.pack(anchor="w", pady=(3, 0))
+    more_menu = tk.Menu(more, tearoff=False)
+    for label, command in [
+        ("清除选择", self.clear_selection),
+        ("批量改章节", self.change_chapter),
+        ("上移", lambda: self.move(-1)),
+        ("下移", lambda: self.move(1)),
+        ("拆分任务", self.split_task),
+        ("合并任务", self.merge_tasks),
+        ("打开回收站", self.show_trash),
+        ("彻底删除选中", self.delete_trashed_selected),
+        ("清空回收站", self.empty_task_trash),
+    ]:
+        more_menu.add_command(label=label, command=lambda fn=command: self.guard(fn))
+    more.configure(menu=more_menu)
+    self.count = ttk.Label(task_list_panel, text="0 条任务")
     self.count.pack(anchor="e", pady=(3, 0))
+
+    detail_area = ttk.Frame(task_detail_panel)
+    detail_area.pack(fill="both", expand=True)
+    self.task_detail = tk.Text(
+        detail_area, wrap="word", font=("Microsoft YaHei", 9),
+        padx=10, pady=8, relief="flat", bg="white", fg="#243247",
+        state="disabled", exportselection=False,
+    )
+    detail_scroll = ttk.Scrollbar(detail_area, orient="vertical", command=self.task_detail.yview)
+    self.task_detail.configure(yscrollcommand=detail_scroll.set)
+    detail_scroll.pack(side="right", fill="y")
+    self.task_detail.pack(fill="both", expand=True)
+    self.task_detail.bind("<Button-3>", lambda event: _readonly_text_menu(self.task_detail, event))
+    self.task_detail.bind("<Control-c>", lambda event: (_copy_selection(self.task_detail), "break")[1])
+    self.task_detail.bind("<Control-C>", lambda event: (_copy_selection(self.task_detail), "break")[1])
 
     self.editor_open = False
     self.source_panel_visible = False
     self.rid = None
     self._task_focus_id = None
     self._working_saved_key = None
-    self._task_context = tk.Menu(self, tearoff=False)
-    self._task_context.add_command(label="复制任务标题", command=lambda: self.copy_selected_tasks("title"))
-    self._task_context.add_command(label="复制任务详情", command=lambda: self.copy_selected_tasks("detail"))
-    self._task_context.add_command(label="复制选中任务", command=lambda: self.copy_selected_tasks("all"))
     self.after(160, self.position_task_sashes)
 
 
@@ -334,6 +460,10 @@ def position_task_sashes(self):
     width = self.tasks_split.winfo_width()
     if width > 700:
         self.tasks_split.sashpos(0, int(width * 0.60))
+    if hasattr(self, "task_right_split"):
+        height = self.task_right_split.winfo_height()
+        if height > 400:
+            self.task_right_split.sashpos(0, int(height * 0.58))
 
 
 def build_progress_page(self):
@@ -399,7 +529,7 @@ def build_progress_page(self):
     self.progress_hint = ttk.Label(page, text="选择左侧分组查看任务明细。", foreground="#64748B")
     self.progress_hint.pack(anchor="w", pady=(5, 0))
     _install_text_selection(self.progress_detail)
-    self.progress_detail.bind("<Button-3>", lambda event: _text_menu(self.progress_detail, event))
+    self.progress_detail.bind("<Button-3>", lambda event: _readonly_text_menu(self.progress_detail, event))
     self.progress_tasks = self.progress_detail
     self.progress_group_map = {}
     self.progress_task_doc_map = {}
@@ -569,6 +699,7 @@ def clear_task_document(self, message="尚未选择文档。"):
     self._working_loading = False
     self.tasks_context.configure(text=message)
     self.working_hint.configure(text=message)
+    self.refresh_task_detail()
     self.update_count()
 
 
@@ -612,6 +743,7 @@ def refresh_tasks(self):
         chapters = []
         self.tasks_context.configure(text="请选择项目和文档。")
     self.update_count()
+    self.refresh_task_detail()
     self.refresh_home()
     if hasattr(self, "progress_chapters") and self.pages["progress"].winfo_manager():
         self.refresh_progress()
@@ -673,6 +805,7 @@ def on_task_selected(self, event=None):
         self.rid = int(selected[0])
         self._task_focus_id = self.rid
     self.update_count()
+    self.refresh_task_detail()
 
 
 def load_editor(self, rid):
@@ -855,6 +988,87 @@ def clear_selection(self):
     self.update_count()
 
 
+def edit_working_table(self):
+    self.require_doc()
+    from reqdoc_source_table import tables_in, replace_table
+
+    original = self.working_text.get("1.0", "end-1c")
+    tables = tables_in(original)
+    if not tables:
+        raise ValueError("当前工作文档中没有识别到 Markdown 表格。")
+    if len(tables) > 1:
+        messagebox.showinfo(
+            "编辑表格",
+            f"识别到 {len(tables)} 张表格。本次先编辑第一张；保存后可再次打开继续编辑其他表格。",
+            parent=self,
+        )
+    table = tables[0]
+    win = tk.Toplevel(self)
+    win.title("编辑工作文档表格")
+    self.sized_dialog(win, 900, 560)
+    win.transient(self)
+    win.grab_set()
+    root = ttk.Frame(win, padding=10)
+    root.pack(fill="both", expand=True)
+    ttk.Label(
+        root,
+        text="双击单元格即可修改；保存后会写回左侧工作文档，不会修改原始文件。",
+        foreground="#52647B",
+    ).pack(anchor="w", pady=(0, 7))
+    frame = ttk.Frame(root)
+    frame.pack(fill="both", expand=True)
+    columns = [f"c{i}" for i in range(len(table.headers))]
+    grid = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+    for col, header in zip(columns, table.headers):
+        grid.heading(col, text=header)
+        grid.column(col, width=max(120, min(280, len(header) * 18)), minwidth=80, stretch=True)
+    sy = ttk.Scrollbar(frame, orient="vertical", command=grid.yview)
+    sx = ttk.Scrollbar(frame, orient="horizontal", command=grid.xview)
+    grid.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+    sy.pack(side="right", fill="y")
+    sx.pack(side="bottom", fill="x")
+    grid.pack(fill="both", expand=True)
+    for index, row in enumerate(table.rows):
+        grid.insert("", "end", iid=str(index), values=row)
+
+    def edit_cell(event):
+        iid = grid.identify_row(event.y)
+        column_id = grid.identify_column(event.x)
+        if not iid or not column_id:
+            return
+        column_index = int(column_id[1:]) - 1
+        values = list(grid.item(iid, "values"))
+        current = values[column_index]
+        header = table.headers[column_index]
+        value = simpledialog.askstring(
+            "编辑单元格", f"{header}：", initialvalue=current, parent=win
+        )
+        if value is not None:
+            values[column_index] = value
+            grid.item(iid, values=values)
+
+    grid.bind("<Double-1>", edit_cell)
+
+    def save():
+        rows = [list(grid.item(iid, "values")) for iid in grid.get_children()]
+        updated = replace_table(original, table, list(table.headers), rows)
+        self._working_loading = True
+        self.working_text.delete("1.0", "end")
+        self.working_text.insert("1.0", updated)
+        self.working_text.edit_modified(False)
+        self._working_loading = False
+        self._working_dirty = True
+        self.save_working_document(silent=True)
+        win.destroy()
+        self.status.set("表格已写回独立工作文档；原始文件未修改。")
+
+    footer = ttk.Frame(root)
+    footer.pack(fill="x", pady=(8, 0))
+    ttk.Button(footer, text="取消", command=win.destroy).pack(side="right", padx=(6, 0))
+    ttk.Button(footer, text="保存表格修改", command=lambda: self.guard(save)).pack(side="right")
+    return win
+
+
 def add_working_image(self):
     self.require_doc()
     path = filedialog.askopenfilename(
@@ -1004,11 +1218,7 @@ def import_paths(self, paths):
         warnings.extend(f"{path.name}：{note}" for note in notes)
     if not prepared:
         raise ValueError("没有可导入的资料。")
-    initial = "table" if any("|" in text for _, text in prepared) else "document"
-    estimated = document_to_task_items("\n\n".join(text for _, text in prepared))
-    if len(estimated) > 500:
-        raise ValueError("一次导入最多生成 500 条任务，请先缩小文件范围。")
-
+    initial = "table"
     win = tk.Toplevel(self)
     win.title("导入文件：形成工作文档或任务")
     self.sized_dialog(win, 900, 680)
@@ -1029,14 +1239,19 @@ def import_paths(self, paths):
     ).pack(anchor="w")
     append_var = tk.BooleanVar(value=False)
     ttk.Checkbutton(root, text="追加到当前工作文档末尾（不勾选则替换工作文档内容）", variable=append_var).pack(anchor="w", pady=(5, 7))
-    preview = tk.Text(root, wrap="word", height=18, font=("Microsoft YaHei", 9))
-    preview.pack(fill="both", expand=True)
-    preview.insert("1.0", "\n\n".join(f"# {path.stem}\n\n{text}" for path, text in prepared))
-    preview.configure(state="disabled")
+    ttk.Label(
+        root,
+        text="导入文件：" + "、".join(path.name for path, _ in prepared),
+        foreground="#52647B", wraplength=840, justify="left",
+    ).pack(anchor="w", pady=(8, 12))
     footer = ttk.Frame(root)
     footer.pack(fill="x", pady=(8, 0))
 
     def commit():
+        if mode_var.get() == "tasks":
+            estimated = document_to_task_items("\n\n".join(text for _, text in prepared))
+            if len(estimated) > 500:
+                raise ValueError("一次导入最多生成 500 条任务，请先缩小文件范围。")
         archived_docs = []
         all_warnings = list(warnings)
         for path, _ in prepared:
@@ -1200,8 +1415,6 @@ def build_settings_page(self):
     ttk.Button(box, text="备份全部数据", command=lambda: self.guard(self.backup)).pack(anchor="w", pady=5)
     ttk.Button(box, text="恢复为独立副本", command=lambda: self.guard(self.restore_backup)).pack(anchor="w", pady=5)
     ttk.Button(box, text="打开文档数据目录", command=lambda: self.guard(lambda: self.open_path(self.store.settings.docs_dir))).pack(anchor="w", pady=5)
-    ttk.Button(box, text="查看原始资料归档", command=lambda: self.guard(lambda: self.open_aux(self.sourcetab))).pack(anchor="w", pady=5)
-    ttk.Button(box, text="查看文档快照", command=lambda: self.guard(lambda: self.open_aux(self.historytab))).pack(anchor="w", pady=5)
     ttk.Button(box, text="使用说明", command=lambda: self.guard(self.help)).pack(anchor="w", pady=5)
 
 
@@ -1213,10 +1426,10 @@ def help_text(self):
 2. 导入文件：选择 Word、Markdown 或 TXT；导入时选择“形成可编辑表格/文档”或“形成任务”。两种方式都会把原始文件只读归档，并生成独立工作文档。
 
 【工作文档与源文件】
-工作文档是软件生成的独立编辑副本，保存在本机数据库中。编辑工作文档不会改写源文件。添加图片、粘贴图片会把图片复制到当前文档的 assets/working 目录，并插入 Markdown 图片引用。
+工作文档是软件生成的独立编辑副本，保存在本机数据库中。编辑工作文档不会改写源文件。Markdown 表格可通过“编辑表格”双击单元格修改；添加图片、粘贴图片会把图片复制到当前文档的 assets/working 目录，并插入图片引用。
 
 【任务处理】
-右侧任务列表用于新增、插入、编辑、标记完成和回收任务。双击任务可编辑；右键可复制标题或详情。工作文档和任务数据独立保存。
+右侧任务列表用于新增、插入、编辑、标记完成和回收任务。选择任务后，下方显示任务明细；可用鼠标自由框选需要的文字，再右键复制。工作文档和任务数据独立保存。
 
 【进度统计】
 顶部只选择全部项目或单个项目。下方左侧竖向显示项目/文档分组，右侧任务明细可以鼠标框选文本并右键复制。
@@ -1257,6 +1470,8 @@ def install(StudioClass, StoreClass):
 
     replacements = {
         "build_home_page": build_home_page,
+        "build_import_page": build_import_page,
+        "refresh_import_page": refresh_import_page,
         "build_tasks_page": build_tasks_page,
         "build_progress_page": build_progress_page,
         "build_export_page": build_export_page,
@@ -1278,6 +1493,8 @@ def install(StudioClass, StoreClass):
         "selected_ids": selected_ids,
         "task_cell_click": task_cell_click,
         "on_task_selected": on_task_selected,
+        "task_list_right_click": task_list_right_click,
+        "refresh_task_detail": refresh_task_detail,
         "load_editor": load_editor,
         "show_editor": show_editor,
         "hide_editor": hide_editor,
@@ -1293,6 +1510,7 @@ def install(StudioClass, StoreClass):
         "select_all_visible": select_all_visible,
         "clear_selection": clear_selection,
         "add_working_image": add_working_image,
+        "edit_working_table": edit_working_table,
         "_insert_working_image": _insert_working_image,
         "paste_working_image": paste_working_image,
         "working_paste_event": working_paste_event,

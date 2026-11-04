@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 import unittest
 from pathlib import Path
 
@@ -18,8 +19,17 @@ class FakeStore:
     def __init__(self, db_path):
         self.db_path = str(db_path)
 
+    @contextmanager
     def conn(self):
-        return sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
 
 class WorkingDocumentTests(unittest.TestCase):

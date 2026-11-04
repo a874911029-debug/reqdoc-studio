@@ -110,8 +110,12 @@ def table_to_task_items(table: PipeTable, source_path: str, source_name: str,
     index=task_title_column(table.headers) if title_column is None else title_column
     if index is None or index<0 or index>=len(table.headers):
         raise ValueError('必须指定有效的任务标题列。')
+    section_headers = {
+        '章节', '所属章节', '分类', '任务分类',
+        'section', 'task section', 'category', 'task category', 'group',
+    }
     section_col=next((i for i,h in enumerate(table.headers)
-                      if str(h).strip() in ('章节','所属章节','分类','任务分类')),None)
+                      if re.sub(r'\s+,' ',str(h).strip().lower()) in section_headers),None)
     rows=[]
     for row_index,values in enumerate(table.rows):
         title=values[index].strip()
