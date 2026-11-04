@@ -16,7 +16,7 @@ def _now():
 
 
 def _file_stem(value):
-    value = re.sub(r'[<>:"/\\\\|?*\\x00-\\x1f]', "_", str(value)).strip(" .")
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value)).strip(" .")
     return (value[:80] or "document")
 
 
