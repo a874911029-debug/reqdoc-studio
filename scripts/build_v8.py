@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "文档工作台 V8.0.5：新增独立可编辑工作文档；导入文件可形成表格/文档或任务；图片插入与粘贴写入工作文档；任务处理采用 60/40 文档与任务布局；进度分组改为左侧竖向导航，任务明细支持文本选择复制。",
+                "notes": "文档工作台 V8.0.6：修复设置页 GitHub 自动更新入口并保留独立可编辑工作文档；导入文件可形成表格/文档或任务；图片插入与粘贴写入工作文档；任务处理采用 60/40 文档与任务布局；进度分组改为左侧竖向导航，任务明细支持文本选择复制。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")
