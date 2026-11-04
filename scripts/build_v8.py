@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "修复任务处理页和任务弹窗；任务变更实时同步到工作文档，进度分组显示项目下的文档。恢复文档导入和导出，修复 Word 表格转任务，并支持剪贴板插图、可空描述和文档内缩略图。",
+                "notes": "修复旧版本退出后 Windows 仍占用程序文件、导致应用内更新失败的问题。包含 V8.0.7 的任务处理、进度分组、文档导入导出及剪贴板插图修复。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")

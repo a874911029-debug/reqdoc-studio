@@ -13,12 +13,46 @@ $backupRoot = Join-Path $root 'program-backups'
 New-Item -ItemType Directory -Path $logDir,$backupRoot -Force | Out-Null
 $log = Join-Path $logDir ('update-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.log')
 function WriteLog([string]$message) { (Get-Date -Format 's')+' '+$message | Out-File -LiteralPath $log -Encoding UTF8 -Append }
+
+function WaitForProgramExit([string]$exe) {
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  $name = [IO.Path]::GetFileNameWithoutExtension($exe)
+  $reported = $false
+  while (Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $exe }) {
+    if ($timer.Elapsed.TotalSeconds -ge 25) { throw 'ReqDoc Studio processes in the target installation are still running' }
+    if (-not $reported) {
+      WriteLog ('Waiting for Windows to release '+[IO.Path]::GetFileName($exe))
+      $reported = $true
+    }
+    Start-Sleep -Milliseconds 250
+  }
+}
+
+function ReplaceProgramFile([string]$source, [string]$target) {
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  $reported = $false
+  while ($true) {
+    try {
+      [IO.File]::Replace($source, $target, [NullString]::Value)
+      return
+    } catch {
+      $code = $_.Exception.GetBaseException().HResult -band 0xFFFF
+      if ($code -notin @(32, 33, 1224) -or $timer.Elapsed.TotalSeconds -ge 25) { throw }
+      if (-not $reported) {
+        WriteLog ('Waiting for Windows to release '+[IO.Path]::GetFileName($target))
+        $reported = $true
+      }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
+
 $expected = @('ReqDocStudio.exe','updater.ps1','version.json')
 $work = Join-Path $env:TEMP ('reqdoc-v8-stage-'+[guid]::NewGuid().ToString('N'))
 $stage = Join-Path $work 'stage'
 $backup = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 $installed = New-Object 'System.Collections.Generic.List[string]'
-$canRollback = $false
+$replacement = @{}
 try {
   $InstallDir=[IO.Path]::GetFullPath($InstallDir)
   $Package=[IO.Path]::GetFullPath($Package)
@@ -86,10 +120,14 @@ try {
     $info = Get-Item -LiteralPath $target -Force
     if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Link target denied' }
     Copy-Item -LiteralPath $target -Destination (Join-Path $backup $name) -Force
+    # ReplaceFile requires the staged file and destination on the same volume.
+    $replacement[$name] = Join-Path $InstallDir ('.'+$name+'.'+[guid]::NewGuid().ToString('N')+'.update')
+    Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $replacement[$name]
   }
-  $canRollback=$true
+  # PyInstaller has a parent process in addition to the Python AppPid.
+  WaitForProgramExit (Join-Path $InstallDir 'ReqDocStudio.exe')
   foreach ($name in $expected) {
-    Copy-Item -LiteralPath (Join-Path $stage $name) -Destination (Join-Path $InstallDir $name) -Force
+    ReplaceProgramFile $replacement[$name] (Join-Path $InstallDir $name)
     $installed.Add($name)
   }
   $app = Start-Process -FilePath (Join-Path $InstallDir 'ReqDocStudio.exe') -WorkingDirectory $InstallDir -PassThru
@@ -98,13 +136,13 @@ try {
   WriteLog ('Installed '+$meta.version+'; program rollback backup='+$backup)
 } catch {
   WriteLog ('ERROR: '+$_.Exception.Message)
-  if ($canRollback) {
-    foreach ($name in $expected) {
+  if ($installed.Count) {
+    foreach ($name in $installed) {
       $previous = Join-Path $backup $name
-      if (Test-Path -LiteralPath $previous -PathType Leaf) {
-        try { Copy-Item -LiteralPath $previous -Destination (Join-Path $InstallDir $name) -Force }
-        catch { WriteLog ('ROLLBACK FAILURE: '+$name) }
-      }
+      try {
+        Copy-Item -LiteralPath $previous -Destination $replacement[$name]
+        ReplaceProgramFile $replacement[$name] (Join-Path $InstallDir $name)
+      } catch { WriteLog ('ROLLBACK FAILURE: '+$name) }
     }
     WriteLog 'Rollback attempted; old program files preserved in backup directory'
   }
@@ -115,5 +153,13 @@ try {
   } catch { WriteLog ('Restart failure: '+$_.Exception.Message) }
   exit 1
 } finally {
-  if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+  foreach ($name in $expected) {
+    if ($replacement[$name]) { Remove-Item -LiteralPath $replacement[$name] -Force -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath (Join-Path $stage $name) -Force -ErrorAction SilentlyContinue
+  }
+  foreach ($dir in @($stage, $work)) {
+    if (Test-Path -LiteralPath $dir -PathType Container) {
+      Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
