@@ -15,7 +15,7 @@ from reqdoc.gui.theme import configure_theme
 from reqdoc.gui.widgets import MarkdownView
 from reqdoc_source_table import tables_in, is_task_table, table_to_task_items
 
-VERSION = 'Studio 简约测试版 7.5'
+VERSION = 'Studio 简约测试版 7.5.1'
 def stamp(): return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 def digest(data): return hashlib.sha256(data).hexdigest()
 def write_atomic(path, data):
@@ -1884,11 +1884,11 @@ class CompactStudio(CompactStudioV4):
         except Exception:pass
 
     def build(self):
-        self.title('reqdoc · 文档与任务工作台 — 测试版 7.5')
+        self.title('reqdoc · 文档与任务工作台 — 测试版 7.5.1')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
-        self.checked_ids=set();self.visible_ids=[];self._refreshing_tasks=False
+        self.checked_ids=set();self.visible_ids=[];self._refreshing_tasks=False;self._task_focus_id=None
         self.insert_after_id=None;self.progress_chapter_map={};self.progress_group_map={};self.progress_task_doc_map={}
         self.current_project_name=None;self.document_map={};self.import_source_map={}
         self.configure(bg='#F2F5FA')
@@ -2226,55 +2226,148 @@ class CompactStudio(CompactStudioV4):
         self.checked_ids.clear();self.filter.set('全部');self.query.set('')
         self.refresh_tasks()
         CompactStudioV4.new_task(self)
+        self._task_focus_id=None
         self.show_editor()
         self.status.set('正在新建任务。填写标题、章节、正文后点击「保存任务」。')
+
+    def focused_task_id(self):
+        """Resolve the one task targeted by edit/insert/image actions.
+
+        Checkbox selections are for batch operations. A focused row takes priority
+        so stale checked IDs cannot redirect a single-task action to another task.
+        """
+        if not self.key or not hasattr(self, 'list'):
+            return None
+        # An open new-task editor is an explicit target; don't fall back to the
+        # previously highlighted list row while the user is composing a new task.
+        if self.editor_open and self.rid is None:
+            return None
+        visible=set(self.visible_ids)
+        active=getattr(self,'_task_focus_id',None)
+        if active in visible:
+            return active
+        selection={int(x) for x in self.list.selection() if str(x).isdigit()}
+        focus=self.list.focus()
+        if focus and str(focus).isdigit() and int(focus) in visible:
+            focused=int(focus)
+            if focused in selection or focused in self.checked_ids:
+                return focused
+        if len(selection)==1:
+            return next(iter(selection))
+        checked=set(self.checked_ids)&visible
+        if len(checked)==1:
+            return next(iter(checked))
+        if self.editor_open and self.rid in visible:
+            return self.rid
+        return None
 
     def insert_after_selected(self):
         self.require_doc()
         if self.filter.get()=='回收站':
             raise ValueError('不能在回收站任务后插入，请先恢复任务或切换到「全部」。')
-        ids=self.selected_ids()
-        if len(ids)!=1:raise ValueError('请勾选或单击选择一条正常任务，作为插入位置。')
-        row=self.s.get_requirement(ids[0]);self.keep_draft()
+        rid=self.focused_task_id()
+        if rid is None:
+            raise ValueError('请单击一条任务标题行，或只勾选一条任务，作为插入位置。')
+        row=self.s.get_requirement(rid);self.keep_draft()
         self.insert_after_id=row.id
         self.checked_ids.clear()
         self.load_editor(None)
         self.chaptervar.set(row.section or '未分类')
         self.insert_mode_var.set('选中任务之后')
         self.titlevar.set('');self.put(self.body,'');self.done_var.set(False)
+        self._task_focus_id=None
         self.show_page('tasks');self.show_editor();self.body.focus_set()
         self.status.set(f'新任务将插入到「{row.title}」之后。')
 
     def edit_selected(self):
         self.require_doc()
-        ids=self.selected_ids()
-        if len(ids)!=1:raise ValueError('请勾选或单击选择一条任务，再点击「编辑任务」。')
-        self.keep_draft();self.load_editor(ids[0]);self.show_page('tasks')
+        rid=self.focused_task_id()
+        if rid is None:
+            raise ValueError('请单击一条任务标题行，或只勾选一条任务，再点击「编辑任务」。')
+        self.keep_draft();self.load_editor(rid);self.show_page('tasks')
         self.show_editor();self.body.focus_set()
 
-
-    def _prepare_image_edit(self):
+    def _prepare_image_edit(self, at_end=True):
+        """Bind image insertion to the currently focused task, never a stale editor."""
         self.require_doc()
-        if not self.editor_open:
-            selected=self.selected_ids()
-            if len(selected)==1:
-                self.load_editor(selected[0])
-            else:
-                # Never put a pasted image into a stale, previously edited task.
-                self.new_task()
-            self.show_editor()
+        rid=self.focused_task_id()
+        if rid is not None:
+            if self.rid != rid:
+                self.keep_draft()
+                self.load_editor(rid)
+        elif self.editor_open:
+            # Keep the task already being edited when the list selection is cleared.
+            pass
+        elif len(set(self.checked_ids)&set(self.visible_ids))>1:
+            raise ValueError('当前勾选了多条任务。请单击要添加图片的那一行，或只勾选一条任务。')
+        else:
+            self.new_task()
+        self.show_page('tasks');self.show_editor()
+        if at_end:
+            self.body.mark_set('insert','end-1c')
+            self.body.see('insert')
+        self.body.focus_set()
+        return self.rid
 
     def add_image(self):
-        self._prepare_image_edit()
-        return Studio.add_image(self)
+        self.require_doc()
+        # Open the picker first: cancelling must not create an empty task/editor.
+        path=filedialog.askopenfilename(parent=self,filetypes=[('图片','*.png *.jpg *.jpeg *.webp *.bmp *.gif')])
+        if not path:return False
+        self._prepare_image_edit(at_end=True)
+        result=Studio.insert_image(self,Path(path))
+        if result:self.status.set('图片已加入当前任务编辑内容；请点击「保存任务」保存。')
+        return result
+
+    def _insert_clipboard_images(self,data,silent=False,at_end=False):
+        from PIL import Image
+        image_exts=('.png','.jpg','.jpeg','.webp','.bmp','.gif')
+        if isinstance(data,Image.Image):
+            with tempfile.TemporaryDirectory() as td:
+                path=Path(td)/'剪贴板图片.png';data.save(path)
+                if at_end:self.body.mark_set('insert','end-1c')
+                return self.insert_image(path)
+        if isinstance(data,list):
+            paths=[Path(item) for item in data if isinstance(item,(str,os.PathLike)) and Path(item).suffix.lower() in image_exts]
+            if paths:
+                inserted=0
+                for path in paths:
+                    if at_end:self.body.mark_set('insert','end-1c')
+                    if self.insert_image(path):inserted+=1
+                return inserted>0
+        if not silent:messagebox.showinfo('粘贴图片','剪贴板中没有可用图片。',parent=self)
+        return False
 
     def paste_image(self,silent=False):
-        # Ctrl+V on the task editor still supports plain text when no image is present.
-        self._prepare_image_edit()
-        return Studio.paste_image(self,silent=silent)
+        self.require_doc()
+        from PIL import ImageGrab, Image
+        data=ImageGrab.grabclipboard()
+        has_image=isinstance(data,Image.Image) or (isinstance(data,list) and any(
+            isinstance(item,(str,os.PathLike)) and Path(item).suffix.lower() in ('.png','.jpg','.jpeg','.webp','.bmp','.gif') for item in data))
+        if not has_image:
+            if not silent:messagebox.showinfo('粘贴图片','剪贴板中没有可用图片。',parent=self)
+            return False
+        self._prepare_image_edit(at_end=True)
+        result=self._insert_clipboard_images(data,silent=True,at_end=True)
+        if result:self.status.set('剪贴板图片已加入当前任务编辑内容；请点击「保存任务」保存。')
+        return result
+
+    def paste_event(self,event=None):
+        # Ctrl+V inside the editor preserves the caret; toolbar paste appends at end.
+        try:
+            from PIL import ImageGrab, Image
+            data=ImageGrab.grabclipboard()
+            has_image=isinstance(data,Image.Image) or (isinstance(data,list) and any(
+                isinstance(item,(str,os.PathLike)) and Path(item).suffix.lower() in ('.png','.jpg','.jpeg','.webp','.bmp','.gif') for item in data))
+            if has_image and self._insert_clipboard_images(data,silent=True,at_end=False):return 'break'
+        except Exception as exc:
+            logging.exception('Paste image failed')
+            self.status.set('粘贴图片失败：'+str(exc))
+        return None
 
     def save_task(self):
         result=CompactStudioV4.save_task(self)
+        self._task_focus_id=self.rid
         self.hide_editor()
         return result
 
@@ -2317,7 +2410,7 @@ class CompactStudio(CompactStudioV4):
         project=self.task_project_var.get()
         if not project:return
         self.keep_draft();self.persist_notes();self.current_project_name=project
-        self.checked_ids.clear();self.visible_ids=[];self.insert_after_id=None;self.selected_source_id=None
+        self.checked_ids.clear();self.visible_ids=[];self.insert_after_id=None;self.selected_source_id=None;self._task_focus_id=None
         labels=self.refresh_task_selectors('')
         if labels:self.on_task_document_selected()
         else:self.clear_task_document('该项目下还没有文档。请先创建文档。')
@@ -2331,7 +2424,7 @@ class CompactStudio(CompactStudioV4):
 
     def clear_task_document(self,message='尚未选择文档。'):
         self.keep_draft();self.persist_notes()
-        self.key=None;self.rid=None;self.checked_ids.clear();self.visible_ids=[];self.insert_after_id=None;self.selected_source_id=None
+        self.key=None;self.rid=None;self.checked_ids.clear();self.visible_ids=[];self.insert_after_id=None;self.selected_source_id=None;self._task_focus_id=None
         self._refreshing_tasks=True;self.list.delete(*self.list.get_children());self._refreshing_tasks=False
         self.load_editor(None);self.tasks_context.configure(text=message)
         self.task_source_var.set('');self.task_source_box.configure(values=[])
@@ -2548,7 +2641,7 @@ class CompactStudio(CompactStudioV4):
         ttk.Label(page,text='当前数据位置：'+str(Path(self.store.settings.home).parent),foreground='#52647B',wraplength=980,justify='left').pack(anchor='w',pady=(8,3))
         ttk.Label(page,text='重要：测试版 7 仍使用本地便携数据目录。删除解压目录前，请使用“备份全部数据”；新版首次解压不自动继承旧版数据。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
         update_box=ttk.LabelFrame(page,text='软件更新 · GitHub',padding=12);update_box.pack(fill='x',pady=(10,0))
-        self.update_status_var=tk.StringVar(value='当前版本：7.5.0 · GitHub 单仓库更新')
+        self.update_status_var=tk.StringVar(value='当前版本：7.5.1 · GitHub 单仓库更新')
         ttk.Label(update_box,textvariable=self.update_status_var,foreground='#52647B').pack(side='left',fill='x',expand=True)
         self.update_button=ttk.Button(update_box,text='检查 GitHub 更新',command=lambda:self.guard(self.check_github_update))
         self.update_button.pack(side='right')
@@ -2899,7 +2992,7 @@ class CompactStudio(CompactStudioV4):
             affected=(self.key in keys)
         else:raise ValueError('请先选择项目或文档。')
         if affected:
-            self.key=None;self.rid=None;self.checked_ids.clear();self.visible_ids=[]
+            self.key=None;self.rid=None;self.checked_ids.clear();self.visible_ids=[];self._task_focus_id=None
             self.insert_after_id=None;self.selected_source_id=None
             self.hide_editor();self.clear_task_document('原文档已删除。请重新选择文档。')
         self.current_project_name=None
@@ -2948,7 +3041,7 @@ class CompactStudio(CompactStudioV4):
         if key==self.key:
             self.refresh_task_selectors(key);self.refresh_task_source();return
         # 文档切换时先隔离所有临时状态，避免跨文档残留。
-        self.checked_ids.clear();self.visible_ids=[];self.insert_after_id=None
+        self.checked_ids.clear();self.visible_ids=[];self.insert_after_id=None;self._task_focus_id=None
         self.progress_task_doc_map={};self.selected_source_id=None
         if hasattr(self,'task_vertical_split'):self.hide_editor()
         CompactStudioV4.load_doc(self,key)
@@ -2973,6 +3066,9 @@ class CompactStudio(CompactStudioV4):
     def refresh_tasks(self):
         if not hasattr(self,'list'):return
         CompactStudioV4.refresh_tasks(self)
+        selected=self.list.selection()
+        if len(selected)==1:self._task_focus_id=int(selected[0])
+        elif getattr(self,'_task_focus_id',None) not in set(self.visible_ids):self._task_focus_id=None
         if hasattr(self,'tasks_context'):
             if self.key:
                 doc=self.s.document(self.key)
@@ -2981,14 +3077,35 @@ class CompactStudio(CompactStudioV4):
                 self.tasks_context.configure(text='请选择项目和文档后开始处理任务。')
         if hasattr(self,'task_source_view') and self.key:self.refresh_task_source()
 
+    def update_count(self):
+        if not hasattr(self,'count'):return
+        checked=set(self.checked_ids)&set(self.visible_ids)
+        active=self.focused_task_id()
+        parts=[f'{len(self.list.get_children())} 条显示']
+        if checked:parts.append(f'勾选 {len(checked)} 条')
+        if active is not None:parts.append('当前行已选')
+        elif not checked:parts.append(f'已选 {len(self.list.selection())} 条')
+        self.count.configure(text=' · '.join(parts))
+
     def selected_ids(self):
+        """Resolve batch selection, pruning stale IDs after document/filter changes."""
         if not self.key:return []
         is_trash=self.filter.get()=='回收站'
+        visible=set(self.visible_ids)
         allowed={r.id for r in self.store.tasks(self.key,trash=is_trash)}
+        self.checked_ids.intersection_update(allowed & visible)
         candidates=self.checked_ids if self.checked_ids else {int(x) for x in self.list.selection()}
-        valid=set(candidates)&allowed&set(self.visible_ids)
-        self.checked_ids.intersection_update(allowed)
-        return sorted(valid)
+        return sorted(set(candidates)&allowed&visible)
+
+    def on_task_selected(self,event=None):
+        if self._refreshing_tasks:return
+        selected=self.list.selection()
+        if len(selected)==1:
+            rid=int(selected[0]);self.list.focus(str(rid));self._task_focus_id=rid
+            if rid!=self.rid:
+                # Preserve unsaved edits before switching the editor to another row.
+                self.guard(lambda:(self.keep_draft(),self.load_editor(rid)))
+        self.update_count()
 
     def task_cell_click(self,event):
         if not self.key:return 'break'
@@ -2996,6 +3113,7 @@ class CompactStudio(CompactStudioV4):
         if not row:return
         rid=int(row)
         if rid not in self.visible_ids:return 'break'
+        self._task_focus_id=rid
         if column=='#1':
             if rid in self.checked_ids:self.checked_ids.remove(rid)
             else:self.checked_ids.add(rid)
