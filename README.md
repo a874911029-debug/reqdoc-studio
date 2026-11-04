@@ -28,3 +28,12 @@ V7.5.0 单仓库引导版已完成离线打包与代码检查。**首次 Release
 
 ## 安全
 请勿提交 API Token、密钥、真实用户数据库、私人原始资料、个人日志、备份及临时安装文件。
+
+
+## V7.5.1 task action hotfix
+- Single-task actions now target the focused row, not a stale checkbox batch selection.
+- Changing the selected task preserves the previous task draft before loading the new task.
+- Add image opens the file picker before creating or changing an editor; cancelling has no side effects.
+- Paste image checks the clipboard first and does not create an empty task when no image exists.
+- Toolbar image insertion appends to the focused task; Ctrl+V in the editor preserves the caret.
+- The hotfix is version 7.5.1. No GitHub Release has been published yet; the update button will not find it until a Release asset is published.
