@@ -51,7 +51,7 @@ class PreservedUiTests(unittest.TestCase):
     def test_original_ui_can_create_edit_and_reopen_task(self):
         app = CompactStudio(self.store)
         app.withdraw()
-        self.addCleanup(lambda: app.destroy() if app.winfo_exists() else None)
+        self.addCleanup(_safe_destroy, app)
         app.load_doc(self.document.key)
         app.new_task()
         app.titlevar.set("第一条整理任务")
