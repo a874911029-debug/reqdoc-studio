@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.1",
+  "version": "8.0.2",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.1-win64.zip",
-    "size": 24672874,
-    "sha256": "8d95bb36de957384984ec33e1b7c53b76cb2e989a0a029abb2288e35d07a2ebd"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.2-win64.zip",
+    "size": 24674308,
+    "sha256": "1f881ab0adc87d38007ca24c3fbdbbee5dc1a99911662401ec5ceb3e909d2e10"
   },
-  "notes": "文档工作台 V8 独立版：本地项目/文档/任务、原件只读归档、图片与工作文档编辑。",
-  "source_commit": "d9023fa97e1690b6dbbe1ca65610dcf4ec3412a1"
+  "notes": "文档工作台 V8.0.2：修复窗口销毁后的 Tk 更新回调、从已校验更新包启动独立更新器，并为异常退出提供限定 PID 的安装回退。",
+  "source_commit": "672ccd540d3ce30e82d8fd9b6cdfea86174b52e0"
 }
