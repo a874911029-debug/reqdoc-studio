@@ -1,49 +1,34 @@
 # ReqDoc · 项目、文档与任务工作台
 
-Windows 本地文档与任务管理工具。**源码和安装包均使用这一个公开仓库**，不再使用 `reqdoc-studio-updates`。
+Windows 本地文档与任务管理工具。
 
-## 功能
-- 项目 → 文档 → 任务的层级管理
-- TXT / Markdown / DOCX 导入与原始资料阅读
-- 表格整理、任务编辑、完成进度、回收站
-- Windows 便携版与应用内 GitHub 更新（发布通道准备中）
+## 更新系统状态
 
-## 下载与更新
-正式发布的 ZIP 将存放在本仓库的 [Releases](https://github.com/a874911029-debug/reqdoc-studio/releases)；应用内的「检查 GitHub 更新」也只查询本仓库。
+本仓库正在把应用内更新从 GitHub Releases 迁移到同仓库的 \`updates\` 分支。
 
-**当前状态：尚未发布第一个正式 GitHub Release。** 现有旧版程序可能仍指向旧的更新仓库，不能把旧版中的更新按钮视为已可用。请勿在未备份数据时覆盖程序目录。
+- 源码：\`main\`
+- 自动构建：GitHub Actions / Windows / Python 3.12
+- 更新清单：\`updates/latest.json\`
+- 更新包：\`updates/reqdoc-update-vMAJOR.MINOR.PATCH.zip\`
+
+每次更新器源码版本变更后，Actions 会运行语法检查、回归测试、更新包构建和 ZIP 安全校验；全部通过后自动发布到 \`updates\` 分支。不再要求手动创建 GitHub Release 或上传 Release 附件。
+
+## 首次迁移边界
+
+当前 V7.5.2 安装包中的更新器仍访问旧的 GitHub Releases 通道，因此它不能自行发现新的 \`updates\` 通道。首次迁移需要一次性安装更新器迁移包（V7.5.3）。这次只替换 \`_internal/reqdoc_updater.py\`、\`updater.ps1\` 和版本清单，不替换主程序 EXE、Python 运行库或用户数据。
+
+首次迁移完成后，后续更新器版本可由应用内更新按钮自动检查、下载和安装。
 
 ## 数据保护
-用户项目、文档、原始文件与数据库 **不得提交到 Git**。程序升级必须排除 `reqdoc-data/`，覆盖前备份，失败时回滚程序文件。
 
-## 源码状态
-已公开 `src/reqdoc_studio.py`、`src/reqdoc_updater.py`、资料编辑、表格解析、文件拖入和表格复制模块。
+- \`reqdoc-data\`、用户项目、文档、数据库和原始资料不进入更新包。
+- 当前迁移包只允许更新器模块、独立 PowerShell 更新器和版本清单。
+- 下载后执行 SHA-256、ZIP 路径、文件清单、CRC 和版本一致性检查。
+- 安装前备份被覆盖的更新器文件；失败时回滚。
+- 更新器不会删除、覆盖或搬动 \`reqdoc-data\`。
 
-**尚未完全开源的部分：** 旧版 Windows EXE 中的 `reqdoc` 基础引擎仍只有打包运行文件，当前仓库尚不能从源码完整重新构建相同 EXE。我们会在拿到并核验基础引擎源码后补齐，而不是假称已完整开源。
+## 源码与构建边界
 
-本项目的安装包和源码分开管理：源码放在 `src/`，约 52 MB 的便携安装包只放在本仓库 Releases 附件，不提交 Git 历史。
+旧版 \`reqdoc\` 基础引擎的完整构建源码仍未全部进入仓库。当前自动流水线只构建更新器迁移补丁，不重建 EXE，也不宣称已完整开源或可独立重建整个应用。
 
-## 当前可下载状态
-V7.5.0 单仓库引导版已完成离线打包与代码检查。**首次 Release 附件仍待上传，当前应用内下载未正式上线。**
-
-## 安全
-请勿提交 API Token、密钥、真实用户数据库、私人原始资料、个人日志、备份及临时安装文件。
-
-
-## V7.5.1 task action hotfix (superseded)
-This historical hotfix is superseded by V7.5.2.
-- Single-task actions now target the focused row, not a stale checkbox batch selection.
-- Changing the selected task preserves the previous task draft before loading the new task.
-- Add image opens the file picker before creating or changing an editor; cancelling has no side effects.
-- Paste image checks the clipboard first and does not create an empty task when no image exists.
-- Toolbar image insertion appends to the focused task; Ctrl+V in the editor preserves the caret.
-- The hotfix is version 7.5.1. No GitHub Release has been published yet; the update button will not find it until a Release asset is published.
-
-
-## V7.5.2 processed-task workspace
-- The task workspace opens with the processed task list as the primary view; the source-material pane is hidden by default.
-- Original imported files are read-only archives. The extracted source preview is read-only and is not the editable task result.
-- The editable result is stored in independent task records and document snapshots. Editing tasks does not modify the archived source file.
-- New-task and task-edit panels open in the main workspace instead of being obscured by the source pane.
-- Image insertion preserves the text caret. Click in the task body where the image belongs, then choose Insert image or Paste image; use Preview body to inspect the rendered result.
-- This source change has not yet been validated in a real Windows GUI session. The GitHub checks compile the source and run updater tests only.
+主程序及相关模块的源码与当前已安装 V7.5.2 包仍需完成逐文件一致性核验，之后才能把普通应用功能文件纳入自动增量更新白名单。
