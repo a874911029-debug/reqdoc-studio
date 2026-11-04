@@ -47,7 +47,7 @@ def validate_feed(data):
         raise UpdateError("更新包 SHA-256 无效。")
     if type(asset.get("size")) is not int or not (1024 <= asset["size"] <= MAX_ARCHIVE):
         raise UpdateError("更新包体积无效。")
-    return {"version": version, "asset": asset, "notes": str(data.get("notes", ""))[:400]}
+    minimum = data.get("minimum_supported_version", "8.0.0")\n    if version_key(minimum)[0] != 8 or version_key(minimum) > version_key(version):\n        raise UpdateError("最低支持版本与更新版本不匹配。")\n    return {"version": version, "minimum_supported_version": minimum, "asset": asset, "notes": str(data.get("notes", ""))[:400]}
 
 
 def fetch_manifest():
