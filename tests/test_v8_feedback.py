@@ -19,7 +19,7 @@ from reqdoc_working_document import (
     document_to_task_items,
     install,
     read_working_document,
-    working_image_menu,
+    working_document_menu,
     write_working_document,
 )
 
@@ -158,7 +158,7 @@ class FeedbackTests(unittest.TestCase):
         _, _, position = text.dump("1.0", "end", image=True)[0]
         x, y, _, height = text.bbox(position)
         with patch("reqdoc_working_document._text_menu") as menu:
-            working_image_menu(self.app, SimpleNamespace(x=x + 1, y=y + height // 2))
+            working_document_menu(self.app, SimpleNamespace(x=x + 1, y=y + height // 2))
             delete_image = menu.call_args.args[2]
         self.assertIsNotNone(delete_image)
         delete_image()
@@ -189,6 +189,56 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(self.store.tasks(self.doc.key, trash=True), [old_trash])
         self.assertNotIn(first.title, self.app.working_text.get("1.0", "end-1c"))
 
+    def test_document_status_edits_and_line_removal_sync_automatically(self):
+        first = self.store.save_task(self.doc.key, "应标记完成", "章节", "详情\n另一行")
+        second = self.store.save_task(self.doc.key, "应删除", "章节", "原任务详情")
+        self.app.show_page("tasks")
+        self.app.update()
+        text = self.app.working_text
+
+        def wait_for_sync():
+            finished = tk.BooleanVar(master=self.app, value=False)
+            self.app.after(475, lambda: finished.set(True))
+            self.app.wait_variable(finished)
+
+        start, end, _ = self.app._working_task_marks[first.id]
+        text.replace(start, end, f"> #{first.id} · 完成")
+        wait_for_sync()
+        self.assertTrue(self.store.service.get_requirement(first.id).done)
+        self.assertEqual(self.app.list.item(str(first.id), "values")[1], "已完成")
+        self.assertIn(f"> #{first.id} · 已完成", text.get("1.0", "end-1c"))
+        start, _, _ = self.app._working_task_marks[second.id]
+        text.delete(start, f"{start} +1 lines linestart")
+        wait_for_sync()
+        self.assertFalse(self.app.list.exists(str(second.id)))
+        with self.assertRaises(ValueError):
+            self.store.service.get_requirement(second.id)
+        self.assertNotIn(second.title, text.get("1.0", "end-1c"))
+        self.assertTrue(self.store.service.get_requirement(first.id).done)
+
+    def test_document_context_menu_adds_task_after_clicked_task(self):
+        first = self.store.save_task(self.doc.key, "第一项", "章节", "保留正文")
+        second = self.store.save_task(self.doc.key, "后续任务", "章节", "详情")
+        self.app.show_page("tasks")
+        self.app.update()
+        text = self.app.working_text
+        start = self.app._working_task_marks[first.id][0]
+        body = f"{start} +2 lines linestart"
+        text.tag_add("sel", body, f"{body} lineend")
+        text.see(body)
+        self.app.update()
+        x, y, _, height = text.bbox(body)
+        with patch("reqdoc_working_document._text_menu") as menu:
+            working_document_menu(self.app, SimpleNamespace(x=x + 1, y=y + height // 2))
+            add_task = menu.call_args.args[3]
+        dialog = add_task()
+        details = next(widgets(dialog, tk.Text))
+        self.assertEqual(details.get("1.0", "end-1c"), first.content)
+        next(widgets(dialog, ttk.Entry)).insert(0, "右键新增")
+        self.button(dialog, "确定").invoke()
+        self.assertEqual([row.title for row in self.store.tasks(self.doc.key)],
+                         [first.title, "右键新增", second.title])
+
     def test_library_settings_switch_copies_current_data_and_updates_startup(self):
         self.app.show_page("settings")
         page = self.app.pages["settings"]
@@ -209,7 +259,7 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(self.app._library_changed)
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.appdata), "REQDOC_V8_DATA": ""}):
             active = Settings.from_env()
-        self.assertEqual(active.library_root, target)
+        self.assertTrue(active.library_root.samefile(target))
         reopened = WorkingStore(active)
         self.assertEqual(reopened.service.get_requirement(task.id), task)
         self.assertIn("尚未保存的正文", read_working_document(reopened, self.doc.key))
@@ -226,6 +276,18 @@ class FeedbackTests(unittest.TestCase):
         self.assertFalse(self.store.settings.library_config.exists())
         self.assertFalse(list(target.iterdir()))
         self.assertEqual(self.store.service.document(self.doc.key), self.doc)
+
+    def test_undoing_prose_does_not_remove_generated_task_lines(self):
+        text = self.app.working_text
+        text.insert("1.0", "手写正文")
+        task = self.store.save_task(self.doc.key, "保持任务", "章节", "详情")
+        self.app.show_page("tasks")
+        self.app.update()
+        text.edit_undo()
+        self.app.update()
+        self.assertNotIn("手写正文", text.get("1.0", "end-1c"))
+        self.assertIn(f"> #{task.id} · 未完成", text.get("1.0", "end-1c"))
+        self.assertEqual(self.store.tasks(self.doc.key), [task])
 
     def test_split_merge_replacement_rolls_back_and_keeps_order(self):
         first = self.store.save_task(self.doc.key, "原任务", "章节", "详情")

@@ -287,7 +287,7 @@ class Store:
             for index,task_id in enumerate(ids):
                 c.execute('INSERT OR REPLACE INTO studio_order(id,position) VALUES(?,?)',(task_id,index*1000))
         return row
-    def compose(self,key,only_open=False,*,rows=None):
+    def compose(self,key,only_open=False,*,rows=None,status_lines=None):
         doc=self.service.document(key);intro,outro=self.notes(key)
         rows=[r for r in (self.tasks(key) if rows is None else rows) if not only_open or not r.done]
         result=[f'# {doc.name}',f'> 项目：{doc.project_name} · 任务 {len(rows)} · 已完成 {sum(r.done for r in rows)}','']
@@ -295,8 +295,15 @@ class Store:
         section=None
         for r in rows:
             if section!=r.section:section=r.section;result.extend(['## '+(section or '未分类'),''])
-            result.extend([f'### {r.title}',f'> #{r.id} · '+('已完成' if r.done else '未完成'),'',render_requirement_body(r),''])
+            result.append(f'### {r.title}')
+            if status_lines is not None:status_lines[r.id]=len(result)
+            result.extend([f'> #{r.id} · '+('已完成' if r.done else '未完成'),'',render_requirement_body(r),''])
         if outro:result.extend(['## 补充说明','',outro,''])
+        if status_lines is not None:
+            offset=0;offsets=[]
+            for part in result:
+                offsets.append(offset);offset+=part.count('\n')+1
+            for rid,index in status_lines.items():status_lines[rid]=offsets[index]
         return '\n'.join(result)
     def snapshot(self,key):
         text=self.compose(key)
@@ -388,6 +395,19 @@ class Store:
         conn.executemany('DELETE FROM studio_trash WHERE id=?',[(rid,) for rid in ids])
         conn.executemany('DELETE FROM studio_order WHERE id=?',[(rid,) for rid in ids])
         conn.executemany('DELETE FROM studio_drafts WHERE key=?',[(f'task:{key}:{rid}',) for rid in ids])
+
+    def apply_document_task_edits(self,key,completion,removed):
+        """Apply edits to the visible status lines as one transaction."""
+        with self.service.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            active = {row.id for row in self.tasks(key)}
+            removed = removed & active
+            if removed:
+                self._delete_task_rows(conn,key,removed)
+                conn.execute('DELETE FROM studio_versions WHERE doc=?',(key,))
+            updated = datetime.now().isoformat(timespec='seconds')
+            conn.executemany('UPDATE reqdoc_requirements SET done=?,updated_at=? WHERE id=?',
+                             [(int(done),updated,rid) for rid,done in completion.items() if rid in active-removed])
 
     def replace_tasks(self,key,task_ids,replacements):
         """Commit a split or merge together with removal of the replaced tasks."""
@@ -3520,7 +3540,7 @@ class CompactStudio(CompactStudioV4):
         self._update_in_progress=False
         for handle in ('_autosave_after_id','_refresh_tree_after_id','_task_sash_after_id',
                        '_editor_sash_after_id','_source_sash_after_id','_update_poll_after_id','_drop_after_id',
-                       '_working_preview_after_id'):
+                       '_working_preview_after_id','_working_task_edit_after_id'):
             task=getattr(self,handle,None)
             if task:
                 try:self.after_cancel(task)

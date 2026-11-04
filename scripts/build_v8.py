@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "任务可直接删除，设置页可更改文件库保存路径。插图仅显示图片和填写的描述。包含自动更新重启修复。",
+                "notes": "工作文档与任务状态双向同步，可右键新增任务。包含直接删除任务、文件库路径设置、插图路径隐藏和自动更新重启修复。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")

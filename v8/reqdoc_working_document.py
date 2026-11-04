@@ -18,6 +18,8 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 
 TASK_BLOCK_START = "<!-- reqdoc:tasks -->"
 TASK_BLOCK_END = "<!-- /reqdoc:tasks -->"
+TASK_START_MARK = "reqdoc_tasks_start"
+TASK_END_MARK = "reqdoc_tasks_end"
 TASK_BLOCK = re.compile(
     rf"^{re.escape(TASK_BLOCK_START)}\n.*?^{re.escape(TASK_BLOCK_END)}(?:\n|\Z)",
     re.MULTILINE | re.DOTALL,
@@ -139,8 +141,11 @@ def _copy_selection(widget):
     widget.clipboard_append(value)
 
 
-def _text_menu(widget, event, delete_image=None):
+def _text_menu(widget, event, delete_image=None, add_task=None):
     menu = tk.Menu(widget, tearoff=False)
+    if add_task is not None:
+        menu.add_command(label="新增任务", command=add_task)
+        menu.add_separator()
     if delete_image is not None:
         menu.add_command(label="删除图片", command=delete_image)
         menu.add_separator()
@@ -154,17 +159,35 @@ def _text_menu(widget, event, delete_image=None):
     return "break"
 
 
-def working_image_menu(self, event):
+def working_document_menu(self, event):
     text = self.working_text
     index = text.index(f"@{event.x},{event.y}")
     images = text.dump(index, f"{index}+1c", image=True)
     link = self._working_image_links.get(images[0][1]) if images else None
+    after_id = None
+    if self._working_synced_block and text.compare(TASK_START_MARK, "<=", index) and text.compare(index, "<", TASK_END_MARK):
+        for rid, (start, _, _) in self._working_task_marks.items():
+            if text.compare(f"{start} -1 lines linestart", "<=", index):
+                after_id = rid
+    selection = ""
+    if text.tag_ranges("sel") and text.compare("sel.first", "<=", index) and text.compare(index, "<", "sel.last"):
+        selection = text.get("sel.first", "sel.last").strip()
 
     def delete_image():
         text.delete(index)
         text.delete(*link)
 
-    return _text_menu(text, event, delete_image if link is not None else None)
+    def add_task():
+        self.require_doc()
+        flush_working_task_edits(self)
+        active = {row.id for row in self.store.tasks(self.key)}
+        return _task_dialog(self, after_id=after_id if after_id in active else None, initial_content=selection)
+
+    return _text_menu(
+        text, event,
+        delete_image if link is not None else None,
+        (lambda: self.guard(add_task)) if self.key else None,
+    )
 
 
 def _install_text_selection(widget):
@@ -382,12 +405,16 @@ def build_tasks_page(self):
     self.working_text.bind("<<Modified>>", self.working_document_modified)
     self.working_text.bind("<<Paste>>", self.working_paste_event)
     _install_text_selection(self.working_text)
-    self.working_text.bind("<Button-3>", lambda event: working_image_menu(self, event))
+    self.working_text.bind("<Button-3>", lambda event: working_document_menu(self, event))
     self.working_text.tag_configure("task_marker", elide=True)
     self.working_text.tag_configure("image_markup", elide=True)
     self._working_images = {}
     self._working_image_links = {}
     self._working_preview_after_id = None
+    self._working_task_edit_after_id = None
+    self._working_task_refresh_pending = False
+    self._working_synced_block = ""
+    self._working_task_marks = {}
     self.body = self.working_text
     self._working_dirty = False
     self._working_loading = False
@@ -622,6 +649,10 @@ def working_document_modified(self, event=None):
     if self.working_text.edit_modified():
         if not self._working_loading:
             self._working_dirty = True
+            if self._working_task_marks and self.working_text.get(TASK_START_MARK, TASK_END_MARK) != self._working_synced_block:
+                if self._working_task_edit_after_id is not None:
+                    self.after_cancel(self._working_task_edit_after_id)
+                self._working_task_edit_after_id = self.after(350, lambda: self.guard(lambda: apply_working_task_edits(self)))
         self.working_text.edit_modified(False)
         if self._working_preview_after_id is None:
             self._working_preview_after_id = self.after_idle(lambda: refresh_working_images(self))
@@ -674,6 +705,7 @@ def refresh_working_images(self):
 
 
 def set_working_text(self, content):
+    clear_working_task_marks(self)
     self._working_loading = True
     self.working_text.replace("1.0", "end-1c", content)
     self.working_text.edit_modified(False)
@@ -685,27 +717,116 @@ def set_working_text(self, content):
     refresh_working_images(self)
 
 
-def sync_working_tasks(self, rows):
+def clear_working_task_marks(self):
+    if self._working_task_edit_after_id is not None:
+        self.after_cancel(self._working_task_edit_after_id)
+        self._working_task_edit_after_id = None
+    marks = [mark for start, end, _ in self._working_task_marks.values() for mark in (start, end)]
+    self.working_text.mark_unset(TASK_START_MARK, TASK_END_MARK, *marks)
+    self._working_synced_block = ""
+    self._working_task_marks = {}
+    self._working_task_refresh_pending = False
+
+
+def sync_working_tasks(self, rows, force=False):
     if not self.key or self._working_saved_key != self.key:
+        return
+    if self._working_task_edit_after_id is not None:
+        self._working_task_refresh_pending = True
         return
     widget = self.working_text
     content = widget.get("1.0", "end-1c")
     match = TASK_BLOCK.search(content)
-    if not rows and not match:
+    if not rows and not match and not self._working_synced_block:
         return
-    task_text = self.store.compose(self.key, rows=rows).partition("\n")[2].rstrip()
-    block = f"{TASK_BLOCK_START}\n## 任务清单（自动同步）\n\n{task_text}\n{TASK_BLOCK_END}\n"
+    status_lines = {}
+    block = ""
+    if rows:
+        task_text = self.store.compose(self.key, rows=rows, status_lines=status_lines).partition("\n")[2].rstrip()
+        block = f"{TASK_BLOCK_START}\n## 任务清单（自动同步）\n\n{task_text}\n{TASK_BLOCK_END}\n"
+    separator = ""
     if match:
-        if match[0] == block:
+        if not force and match[0] == block == self._working_synced_block:
             return
         first_line = content.count("\n", 0, match.start()) + 1
         after_line = first_line + match[0].count("\n")
+        start = f"{first_line}.0"
         end = f"{after_line}.0" if match[0].endswith("\n") else "end-1c"
-        widget.replace(f"{first_line}.0", end, block)
+    elif self._working_synced_block:
+        start, end = widget.index(TASK_START_MARK), widget.index(TASK_END_MARK)
+        if widget.compare(end, "<", start):
+            end = start
+        if block and not start.endswith(".0"):
+            separator = "\n\n"
     else:
+        start = end = widget.index("end-1c")
         separator = "\n\n" if content and not content.endswith("\n\n") else ""
-        widget.insert("end-1c", separator + block)
-    self._working_dirty = True
+    clear_working_task_marks(self)
+    if widget.get(start, end) != separator + block:
+        # Generated refreshes must never be undone as if the user removed task lines.
+        undo_enabled = widget["undo"]
+        widget.configure(undo=False)
+        try:
+            widget.replace(start, end, separator + block)
+        finally:
+            widget.configure(undo=undo_enabled)
+    if not block:
+        return
+    first_line = int(start.split(".")[0]) + separator.count("\n")
+    widget.mark_set(TASK_START_MARK, f"{first_line}.0")
+    widget.mark_gravity(TASK_START_MARK, "right")
+    after_line = first_line + block.count("\n")
+    widget.mark_set(TASK_END_MARK, f"{after_line}.0")
+    widget.mark_gravity(TASK_END_MARK, "left")
+    for row in rows:
+        line = first_line + status_lines[row.id] + 2
+        left, right = f"reqdoc_status_start_{row.id}", f"reqdoc_status_end_{row.id}"
+        widget.mark_set(left, f"{line}.0")
+        widget.mark_gravity(left, "left")
+        widget.mark_set(right, f"{line}.end")
+        widget.mark_gravity(right, "right")
+        self._working_task_marks[row.id] = (left, right, row.done)
+    self._working_synced_block = block
+
+
+def apply_working_task_edits(self):
+    self._working_task_edit_after_id = None
+    if not self.key or self._working_saved_key != self.key or not self._working_task_marks:
+        return
+    text = self.working_text
+    if text.get(TASK_START_MARK, TASK_END_MARK) == self._working_synced_block:
+        sync_working_tasks(self, self.store.tasks(self.key), force=True)
+        return
+    completion = {}
+    removed = set()
+    for rid, (start, end, was_done) in self._working_task_marks.items():
+        value = text.get(start, end).strip()
+        if not value:
+            removed.add(rid)
+            continue
+        status = re.fullmatch(rf">\s*#{rid}\s*[·:：]\s*(完成|已完成|未完成)", value)
+        label = status[1] if status else value
+        if label in ("完成", "已完成", "未完成") and (label != "未完成") != was_done:
+            completion[rid] = label != "未完成"
+    if completion or removed:
+        self.store.apply_document_task_edits(self.key, completion, removed)
+        self.checked_ids.difference_update(removed)
+        if self.rid in removed:
+            self.load_editor(None)
+        self.refresh_tasks()
+        self.refresh_progress()
+        self.store.snapshot(self.key)
+        self.status.set("已同步工作文档中的任务变更。")
+    elif self._working_task_refresh_pending:
+        sync_working_tasks(self, self.store.tasks(self.key), force=True)
+
+
+def flush_working_task_edits(self):
+    if self._working_task_edit_after_id is not None:
+        self.after_cancel(self._working_task_edit_after_id)
+        apply_working_task_edits(self)
+    elif self._working_task_marks and self.working_text.get(TASK_START_MARK, TASK_END_MARK) != self._working_synced_block:
+        apply_working_task_edits(self)
 
 
 def load_working_document(self):
@@ -732,7 +853,7 @@ def load_working_document(self):
         ).fetchone()[0]
     sync_working_tasks(self, tasks)
     self._working_dirty |= legacy_summary
-    self.working_hint.configure(text="正文可直接编辑，任务清单请在右侧修改。")
+    self.working_hint.configure(text="改状态或删除编号行可同步任务，右键可新增。")
     self.working_text.focus_set()
 
 
@@ -741,7 +862,11 @@ def save_working_document(self, silent=False):
         if silent:
             return False
         raise ValueError("请先选择一份文档。")
-    content = TASK_BLOCK.sub("", self.working_text.get("1.0", "end-1c"))
+    flush_working_task_edits(self)
+    if self._working_synced_block and self.working_text.compare(TASK_START_MARK, "<=", TASK_END_MARK):
+        content = self.working_text.get("1.0", TASK_START_MARK) + self.working_text.get(TASK_END_MARK, "end-1c")
+    else:
+        content = self.working_text.get("1.0", "end-1c")
     write_working_document(self.store, self.key, content, getattr(self, "_working_mode", "manual"))
     self._working_dirty = False
     self._working_saved_key = self.key
@@ -978,7 +1103,7 @@ def start_manual(self):
     self.status.set("手动输入模式：直接编辑左侧工作文档，完成后点击“转成任务”。")
 
 
-def _task_dialog(self, rid=None, after_id=None):
+def _task_dialog(self, rid=None, after_id=None, initial_content=""):
     self.require_doc()
     existing = self.s.get_requirement(rid) if rid is not None else None
     win = tk.Toplevel(self)
@@ -1008,8 +1133,7 @@ def _task_dialog(self, rid=None, after_id=None):
     body.configure(yscrollcommand=sy.set)
     sy.pack(side="right", fill="y")
     body.pack(fill="both", expand=True)
-    if existing:
-        body.insert("1.0", existing.content)
+    body.insert("1.0", existing.content if existing else initial_content)
     _install_text_selection(body)
 
     def save():
@@ -1114,6 +1238,7 @@ def mark(self, done):
 
 
 def delete_tasks(self):
+    flush_working_task_edits(self)
     ids = self.selected_ids()
     if not ids:
         raise ValueError("请先勾选或选择要删除的任务。")
@@ -1151,6 +1276,7 @@ def clear_selection(self):
 
 def edit_working_table(self):
     self.require_doc()
+    flush_working_task_edits(self)
     from reqdoc_source_table import tables_in, replace_table
 
     original = TASK_BLOCK.sub("", self.working_text.get("1.0", "end-1c"))
@@ -1279,6 +1405,7 @@ def working_paste_event(self, event=None):
 
 
 def working_export_content(self):
+    flush_working_task_edits(self)
     sync_working_tasks(self, self.store.tasks(self.key))
     content = self.working_text.get("1.0", "end-1c")
     return re.sub(rf"^(?:{re.escape(TASK_BLOCK_START)}|{re.escape(TASK_BLOCK_END)})(?:\n|$)", "", content, flags=re.MULTILINE)
@@ -1601,7 +1728,7 @@ def help_text(self):
 工作文档是独立编辑副本，保存在本机数据库中。Markdown 表格可通过“编辑表格”双击单元格修改。复制图片后，将光标放在正文中，按 Ctrl+V 或点击“粘贴图片”。图片描述可留空，插入后会显示缩略图。“导出文档”可预览内容，或导出 Word 和 Markdown 图片包。
 
 【任务处理】
-右侧任务列表用于新增、插入、编辑、标记完成和删除任务。确认后直接从当前任务库删除。左侧任务清单会随右侧更新，正文可独立编辑。选择任务后，可在下方明细中框选文字并右键复制。
+左右两侧的任务状态会同步。在工作文档中把编号行的状态改成“完成”或“未完成”，右侧会更新。删除编号行会直接删除任务。在文档中右键可新增任务；在某条任务上右键时，新任务插在它后面。右侧下方的任务明细可框选和复制。
 
 【进度统计】
 顶部只选择全部项目或单个项目。下方左侧竖向显示项目/文档分组，右侧任务明细可以鼠标框选文本并右键复制。
