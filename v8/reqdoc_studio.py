@@ -2638,20 +2638,20 @@ class CompactStudio(CompactStudioV4):
         ttk.Label(box,text='导出按照当前任务顺序和章节组织；原始导入文件不会被覆盖。',foreground='#64748B').pack(anchor='w',pady=(10,0))
 
     def build_settings_page(self):
-        page=self.pages['settings'];self.page_title(page,'设置与数据维护','升级版本前先备份。旧版数据迁移只在当前数据目录为空时执行，不会覆盖已有项目。')
+        page=self.pages['settings'];self.page_title(page,'设置与数据维护','V8 数据独立保存在本机用户目录；迁移只接受经过校验的 V8 数据目录或备份，不覆盖现有项目。')
         box=ttk.LabelFrame(page,text='数据备份与迁移',padding=16);box.pack(fill='x',pady=(0,12))
         ttk.Button(box,text='备份全部数据',command=lambda:self.guard(self.backup)).pack(anchor='w',pady=4)
-        ttk.Button(box,text='从备份 ZIP 迁移到当前版本',command=lambda:self.guard(self.migrate_from_backup)).pack(anchor='w',pady=4)
-        ttk.Button(box,text='从旧版 reqdoc-data 文件夹迁移',command=lambda:self.guard(self.migrate_from_folder)).pack(anchor='w',pady=4)
+        ttk.Button(box,text='从 V8 备份 ZIP 导入数据',command=lambda:self.guard(self.migrate_from_backup)).pack(anchor='w',pady=4)
+        ttk.Button(box,text='从另一份 V8 数据目录导入',command=lambda:self.guard(self.migrate_from_folder)).pack(anchor='w',pady=4)
         ttk.Button(box,text='恢复备份为独立副本（不覆盖当前数据）',command=lambda:self.guard(self.restore_backup)).pack(anchor='w',pady=4)
         ttk.Button(box,text='打开当前数据目录',command=lambda:self.guard(lambda:self.open_path(Path(self.store.settings.home).parent))).pack(anchor='w',pady=4)
         ttk.Button(box,text='打开文档目录',command=lambda:self.guard(lambda:self.open_path(self.store.settings.docs_dir))).pack(anchor='w',pady=4)
         ttk.Button(box,text='使用说明',command=lambda:self.guard(self.help)).pack(anchor='w',pady=4)
-        ttk.Label(page,text='迁移前会自动备份当前数据；目标已有项目或文档时会拒绝覆盖。若旧版目录已删除且没有备份，需要先从 Windows 回收站恢复旧目录。',foreground='#64748B',wraplength=980,justify='left').pack(anchor='w',pady=8)
+        ttk.Label(page,text='导入前会自动备份当前数据；目标已有项目或文档时会拒绝覆盖。旧版数据库格式不会被强行套用到 V8。',foreground='#64748B',wraplength=980,justify='left').pack(anchor='w',pady=8)
         ttk.Label(page,text='当前数据位置：'+str(Path(self.store.settings.home).parent),foreground='#52647B',wraplength=980,justify='left').pack(anchor='w',pady=(8,3))
-        ttk.Label(page,text='重要：测试版 7 仍使用本地便携数据目录。删除解压目录前，请使用“备份全部数据”；新版首次解压不自动继承旧版数据。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
+        ttk.Label(page,text='重要：V8 用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。软件更新不覆盖该目录；卸载或清理前请先备份。',foreground='#9A5C22',wraplength=980,justify='left').pack(anchor='w',pady=(3,8))
         update_box=ttk.LabelFrame(page,text='软件更新 · GitHub',padding=12);update_box.pack(fill='x',pady=(10,0))
-        self.update_status_var=tk.StringVar(value='当前版本：7.5.1 · GitHub 单仓库更新')
+        self.update_status_var=tk.StringVar(value='当前版本：V8.0.0 · GitHub 单仓库更新')
         ttk.Label(update_box,textvariable=self.update_status_var,foreground='#52647B').pack(side='left',fill='x',expand=True)
         self.update_button=ttk.Button(update_box,text='检查 GitHub 更新',command=lambda:self.guard(self.check_github_update))
         self.update_button.pack(side='right')
@@ -3404,7 +3404,10 @@ def _store_import_legacy_data(self, source, from_backup=False):
         with sqlite_connection(f'file:{src_db.as_posix()}?mode=ro',uri=True) as check:
             integrity=check.execute('PRAGMA integrity_check').fetchone()[0]
             if integrity!='ok':raise ValueError('旧版数据库完整性检查失败：'+str(integrity))
-            if not check.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone():raise ValueError('旧版数据库没有可识别的数据表。')
+            tables={row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            required={'reqdoc_projects','reqdoc_documents','reqdoc_requirements'}
+            if not required.issubset(tables):
+                raise ValueError('该数据库不是 V8 数据格式。为避免误迁移或丢失旧数据，本次已停止；旧版数据库需要单独转换。')
         backup_path=self.backup()
         stage=Path(tempfile.mkdtemp(prefix='reqdoc-migration-stage-',dir=str(target_docs.parent)))
         try:
