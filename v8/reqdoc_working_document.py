@@ -139,8 +139,11 @@ def _copy_selection(widget):
     widget.clipboard_append(value)
 
 
-def _text_menu(widget, event):
+def _text_menu(widget, event, delete_image=None):
     menu = tk.Menu(widget, tearoff=False)
+    if delete_image is not None:
+        menu.add_command(label="删除图片", command=delete_image)
+        menu.add_separator()
     menu.add_command(label="复制", command=lambda: _copy_selection(widget))
     menu.add_command(label="全选", command=lambda: (
         widget.tag_add("sel", "1.0", "end-1c"), widget.focus_set()
@@ -149,6 +152,19 @@ def _text_menu(widget, event):
     menu.add_command(label="粘贴", command=lambda: widget.event_generate("<<Paste>>"))
     menu.tk_popup(event.x_root, event.y_root)
     return "break"
+
+
+def working_image_menu(self, event):
+    text = self.working_text
+    index = text.index(f"@{event.x},{event.y}")
+    images = text.dump(index, f"{index}+1c", image=True)
+    link = self._working_image_links.get(images[0][1]) if images else None
+
+    def delete_image():
+        text.delete(index)
+        text.delete(*link)
+
+    return _text_menu(text, event, delete_image if link is not None else None)
 
 
 def _install_text_selection(widget):
@@ -366,8 +382,11 @@ def build_tasks_page(self):
     self.working_text.bind("<<Modified>>", self.working_document_modified)
     self.working_text.bind("<<Paste>>", self.working_paste_event)
     _install_text_selection(self.working_text)
+    self.working_text.bind("<Button-3>", lambda event: working_image_menu(self, event))
     self.working_text.tag_configure("task_marker", elide=True)
+    self.working_text.tag_configure("image_markup", elide=True)
     self._working_images = {}
+    self._working_image_links = {}
     self._working_preview_after_id = None
     self.body = self.working_text
     self._working_dirty = False
@@ -394,7 +413,7 @@ def build_tasks_page(self):
     ttk.Entry(searchbar, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=(0, 6))
     self.filter = tk.StringVar(value="全部")
     self.filter_box = ttk.Combobox(
-        searchbar, textvariable=self.filter, values=["全部", "未完成", "已完成", "回收站"],
+        searchbar, textvariable=self.filter, values=["全部", "未完成", "已完成"],
         width=9, state="readonly",
     )
     self.filter_box.pack(side="left")
@@ -411,6 +430,8 @@ def build_tasks_page(self):
         ttk.Button(primary, text=label, command=lambda fn=command: self.guard(fn)).pack(
             side="left", padx=(0, 5), pady=2
         )
+    footer = ttk.Frame(task_list_panel)
+    footer.pack(side="bottom", fill="x")
     list_frame = ttk.Frame(task_list_panel)
     list_frame.pack(fill="both", expand=True)
     self.list = ttk.Treeview(
@@ -438,7 +459,7 @@ def build_tasks_page(self):
     self.list.bind("<Double-1>", lambda event: self.guard(self.edit_selected))
     self.list.bind("<Button-3>", self.task_list_right_click)
 
-    actions = ttk.Frame(task_list_panel)
+    actions = ttk.Frame(footer)
     actions.pack(fill="x", pady=(5, 0))
     for label, command in [
         ("全选/取消", self.select_all_visible),
@@ -448,8 +469,11 @@ def build_tasks_page(self):
         ttk.Button(actions, text=label, command=lambda fn=command: self.guard(fn)).pack(
             side="left", padx=(0, 4), pady=2
         )
-    more = ttk.Menubutton(task_list_panel, text="更多任务操作 ▾")
-    more.pack(anchor="w", pady=(3, 0))
+    secondary = ttk.Frame(footer)
+    secondary.pack(fill="x", pady=(3, 0))
+    ttk.Button(secondary, text="删除任务", command=lambda: self.guard(self.delete_tasks)).pack(side="left", padx=(0, 4))
+    more = ttk.Menubutton(secondary, text="更多任务操作 ▾")
+    more.pack(side="left")
     more_menu = tk.Menu(more, tearoff=False)
     for label, command in [
         ("清除选择", self.clear_selection),
@@ -458,15 +482,10 @@ def build_tasks_page(self):
         ("下移", lambda: self.move(1)),
         ("拆分任务", self.split_task),
         ("合并任务", self.merge_tasks),
-        ("移入回收站", self.trash_tasks),
-        ("恢复任务", self.restore_tasks),
-        ("打开回收站", self.show_trash),
-        ("彻底删除选中", self.delete_trashed_selected),
-        ("清空回收站", self.empty_task_trash),
     ]:
         more_menu.add_command(label=label, command=lambda fn=command: self.guard(fn))
     more.configure(menu=more_menu)
-    self.count = ttk.Label(task_list_panel, text="0 条任务")
+    self.count = ttk.Label(footer, text="0 条任务")
     self.count.pack(anchor="e", pady=(3, 0))
 
     detail_area = ttk.Frame(task_detail_panel)
@@ -615,11 +634,13 @@ def refresh_working_images(self):
     text = self.working_text
     content = text.get("1.0", "end-1c")
     previews = {}
+    links = {}
     base = self.s.document_folder(self.key).resolve() if self.key else None
     existing = {name: index for kind, name, index in text.dump("1.0", "end", image=True)}
     for index in reversed(list(existing.values())):
         text.delete(index)
     text.tag_remove("task_marker", "1.0", "end")
+    text.tag_remove("image_markup", "1.0", "end")
     for line, value in enumerate(content.split("\n"), 1):
         if value in (TASK_BLOCK_START, TASK_BLOCK_END):
             text.tag_add("task_marker", f"{line}.0", f"{line + 1}.0")
@@ -637,10 +658,19 @@ def refresh_working_images(self):
                             opened.thumbnail((300, 210))
                             photo = ImageTk.PhotoImage(ImageOps.exif_transpose(opened), master=text)
                     previews[path] = photo
-                text.image_create(f"{line}.end", image=previews[path], padx=5, pady=5)
+                positions = [match.start(), match.start(1), match.end(1), match.end()]
+                first, alt_start, alt_end, last = (
+                    f"{line}.{text.tk.call('string', 'length', value[:offset])}"
+                    for offset in positions
+                )
+                text.tag_add("image_markup", first, alt_start)
+                text.tag_add("image_markup", alt_end, last)
+                name = text.image_create(f"{line}.end", image=previews[path], padx=5, pady=5)
+                links[name] = (first, last)
             except (OSError, ValueError, Image.DecompressionBombError):
                 logging.warning("Could not preview working-document image", exc_info=True)
     self._working_images = previews
+    self._working_image_links = links
 
 
 def set_working_text(self, content):
@@ -824,9 +854,8 @@ def refresh_tasks(self):
     self.visible_ids = []
     if self.key:
         active_rows = self.store.tasks(self.key)
-        is_trash = self.filter.get() == "回收站"
         query = self.query.get().casefold()
-        for row in self.store.tasks(self.key, trash=True) if is_trash else active_rows:
+        for row in active_rows:
             haystack = (row.title + " " + row.content + " " + row.section).casefold()
             if query and query not in haystack:
                 continue
@@ -1084,6 +1113,26 @@ def mark(self, done):
     self.status.set(f"已将 {len(ids)} 条任务标记为" + ("已完成。" if done else "未完成。"))
 
 
+def delete_tasks(self):
+    ids = self.selected_ids()
+    if not ids:
+        raise ValueError("请先勾选或选择要删除的任务。")
+    if not messagebox.askyesno(
+        "删除任务",
+        f"确定删除 {len(ids)} 条任务吗？此操作不可撤销，并会清除当前文档的旧任务快照。",
+        icon="warning", parent=self,
+    ):
+        return
+    self.keep_draft()
+    self.store.delete_tasks_permanently(self.key, ids)
+    self.checked_ids.clear()
+    self.load_editor(None)
+    self.refresh_tasks()
+    self.refresh_progress()
+    self.store.snapshot(self.key)
+    self.status.set(f"已删除 {len(ids)} 条任务。")
+
+
 def select_all_visible(self):
     ids = set(self.visible_ids)
     if ids and ids.issubset(self.checked_ids):
@@ -1284,7 +1333,12 @@ def import_dialog(self):
     self.require_doc()
     paths = filedialog.askopenfilenames(
         parent=self, title="选择要导入的资料（可多选）",
-        filetypes=[("Word / Markdown / TXT", "*.docx *.md *.markdown *.txt")],
+        filetypes=[
+            ("Word / Markdown / TXT", ("*.docx", "*.md", "*.markdown", "*.txt")),
+            ("Word 文档", "*.docx"),
+            ("Markdown 文档", ("*.md", "*.markdown")),
+            ("文本文件", "*.txt"),
+        ],
     )
     if paths:
         self.import_paths(paths)
@@ -1489,13 +1543,11 @@ def build_settings_page(self):
     from version import VERSION
 
     page = self.pages["settings"]
-    self.page_title(page, "设置与数据", "项目、任务、工作文档和原始资料均保存在本机数据目录。")
-    box = ttk.LabelFrame(page, text="数据维护", padding=18)
+    self.page_title(page, "设置与数据", "管理文件库保存位置和软件更新。")
+    box = ttk.LabelFrame(page, text="文件库保存路径", padding=12)
     box.pack(fill="x")
-    ttk.Button(box, text="备份全部数据", command=lambda: self.guard(self.backup)).pack(anchor="w", pady=5)
-    ttk.Button(box, text="恢复为独立副本", command=lambda: self.guard(self.restore_backup)).pack(anchor="w", pady=5)
-    ttk.Button(box, text="打开文档数据目录", command=lambda: self.guard(lambda: self.open_path(self.store.settings.docs_dir))).pack(anchor="w", pady=5)
-    ttk.Button(box, text="使用说明", command=lambda: self.guard(self.help)).pack(anchor="w", pady=5)
+    ttk.Label(box, text=str(self.store.settings.library_root), wraplength=600).pack(anchor="w", pady=(0, 8))
+    ttk.Button(box, text="更改路径", command=lambda: self.guard(lambda: change_library_folder(self))).pack(anchor="w")
 
     update_box = ttk.LabelFrame(page, text="软件更新 · GitHub", padding=12)
     update_box.pack(fill="x", pady=(10, 0))
@@ -1511,6 +1563,29 @@ def build_settings_page(self):
     self._update_queue = None
     self._update_in_progress = False
     self._update_poll_after_id = None
+    ttk.Button(page, text="使用说明", command=lambda: self.guard(self.help)).pack(anchor="w", pady=(10, 0))
+
+
+def change_library_folder(self):
+    if self._update_in_progress:
+        raise ValueError("请先完成当前的软件更新。")
+    current = self.store.settings.library_root.resolve()
+    selected = filedialog.askdirectory(
+        parent=self, title="选择空文件夹作为新文件库", initialdir=str(current.parent), mustexist=True,
+    )
+    if not selected or Path(selected).resolve() == current:
+        return
+    if not messagebox.askyesno(
+        "更改文件库路径",
+        f"将当前项目、文档和图片复制到下方目录，再重新打开工作台。原目录留存。\n\n{selected}",
+        parent=self,
+    ):
+        return
+    self.keep_draft()
+    self.persist_notes()
+    self.store.relocate_library(selected)
+    self._library_changed = True
+    self.close()
 
 
 def help_text(self):
@@ -1526,13 +1601,13 @@ def help_text(self):
 工作文档是独立编辑副本，保存在本机数据库中。Markdown 表格可通过“编辑表格”双击单元格修改。复制图片后，将光标放在正文中，按 Ctrl+V 或点击“粘贴图片”。图片描述可留空，插入后会显示缩略图。“导出文档”可预览内容，或导出 Word 和 Markdown 图片包。
 
 【任务处理】
-右侧任务列表用于新增、插入、编辑、标记完成和回收任务。左侧任务清单会随右侧更新，正文可独立编辑。选择任务后，可在下方明细中框选文字并右键复制。
+右侧任务列表用于新增、插入、编辑、标记完成和删除任务。确认后直接从当前任务库删除。左侧任务清单会随右侧更新，正文可独立编辑。选择任务后，可在下方明细中框选文字并右键复制。
 
 【进度统计】
 顶部只选择全部项目或单个项目。下方左侧竖向显示项目/文档分组，右侧任务明细可以鼠标框选文本并右键复制。
 
-【数据安全】
-原始文件归档保持只读。程序更新不会覆盖 %LOCALAPPDATA%\\ReqDocStudio\\data 中的项目、文档、任务、工作文档和图片。删除文档不自动创建备份；需要时请先手动备份。""",
+【文件库】
+在“设置与数据”中查看或更改文件库保存路径。切换路径时会将当前文件库内容复制到新位置。原始文件归档保持只读。""",
     )
 
 
@@ -1604,6 +1679,7 @@ def install(StudioClass, StoreClass):
         "copy_selected_tasks": copy_selected_tasks,
         "task_list_context_menu": task_list_context_menu,
         "mark": mark,
+        "delete_tasks": delete_tasks,
         "select_all_visible": select_all_visible,
         "clear_selection": clear_selection,
         "edit_working_table": edit_working_table,

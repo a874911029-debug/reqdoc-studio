@@ -1,10 +1,12 @@
 """Regression tests for the installed working-document UI on Windows."""
+import os
 import tempfile
 import tkinter as tk
 import unittest
 import zipfile
 from pathlib import Path
 from tkinter import ttk
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from docx import Document
@@ -17,6 +19,7 @@ from reqdoc_working_document import (
     document_to_task_items,
     install,
     read_working_document,
+    working_image_menu,
     write_working_document,
 )
 
@@ -44,7 +47,10 @@ class FeedbackTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        settings = Settings(home=self.root / "home", docs_dir=self.root / "docs")
+        self.appdata = self.root / "appdata"
+        config = self.appdata / "ReqDocStudio" / "library.json"
+        library = config.parent / "data"
+        settings = Settings(home=library / "home", docs_dir=library / "docs", library_config=config)
         settings.ensure_directories()
         self.store = WorkingStore(settings)
         self.project = self.store.service.create_project_group("项目 A")
@@ -119,6 +125,8 @@ class FeedbackTests(unittest.TestCase):
         content = text.get("1.0", "end-1c")
         self.assertRegex(content, r"^前文\n\n!\[\]\(assets/working/[^)]+\)\n后文$")
         self.assertEqual(len(text.image_names()), 1)
+        visible = text.tk.call(text._w, "get", "-displaychars", "1.0", "end-1c")
+        self.assertEqual(visible, "前文\n\n\n后文")
         self.app.save_working_document()
         self.app.load_working_document()
         self.assertEqual(len(text.image_names()), 1)
@@ -136,6 +144,100 @@ class FeedbackTests(unittest.TestCase):
             self.assertIn("前文", markdown)
             image = next(name for name in names if name.startswith("images/"))
             self.assertIn(f"![]({image})", markdown)
+
+    def test_pasted_image_shows_only_user_description(self):
+        self.app.show_page("tasks")
+        text = self.app.working_text
+        with patch("PIL.ImageGrab.grabclipboard", return_value=Image.new("RGB", (20, 20), "blue")), \
+                patch("reqdoc_working_document.simpledialog.askstring", return_value="图像说明"):
+            self.app.paste_working_image()
+        self.app.update()
+        visible = text.tk.call(text._w, "get", "-displaychars", "1.0", "end-1c")
+        self.assertEqual(visible.strip(), "图像说明")
+        self.assertEqual(len(text.image_names()), 1)
+        _, _, position = text.dump("1.0", "end", image=True)[0]
+        x, y, _, height = text.bbox(position)
+        with patch("reqdoc_working_document._text_menu") as menu:
+            working_image_menu(self.app, SimpleNamespace(x=x + 1, y=y + height // 2))
+            delete_image = menu.call_args.args[2]
+        self.assertIsNotNone(delete_image)
+        delete_image()
+        self.app.update()
+        self.assertFalse(text.image_names())
+        self.assertNotIn("assets/working/", text.get("1.0", "end-1c"))
+
+    def test_delete_tasks_removes_selected_records_directly(self):
+        first = self.store.save_task(self.doc.key, "待删除任务", "章节", "删除的内容")
+        kept = self.store.save_task(self.doc.key, "保留任务", "章节", "保留的内容")
+        old_trash = self.store.save_task(self.doc.key, "旧版回收任务", "章节", "旧数据")
+        self.store.trash([old_trash.id])
+        self.app.show_page("tasks")
+        self.app.update()
+        self.app.list.selection_set(str(first.id))
+        button = self.button(self.app.pages["tasks"], "删除任务")
+        self.assertTrue(button.winfo_ismapped())
+        self.assertNotIn("回收站", self.app.filter_box["values"])
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=False):
+            button.invoke()
+        self.assertEqual(self.store.service.get_requirement(first.id), first)
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True), \
+                patch.object(self.store, "backup", side_effect=AssertionError("backup called")):
+            button.invoke()
+        with self.assertRaises(ValueError):
+            self.store.service.get_requirement(first.id)
+        self.assertEqual(self.store.tasks(self.doc.key), [kept])
+        self.assertEqual(self.store.tasks(self.doc.key, trash=True), [old_trash])
+        self.assertNotIn(first.title, self.app.working_text.get("1.0", "end-1c"))
+
+    def test_library_settings_switch_copies_current_data_and_updates_startup(self):
+        self.app.show_page("settings")
+        page = self.app.pages["settings"]
+        labels = {button.cget("text") for button in widgets(page, ttk.Button)}
+        self.assertEqual(labels, {"更改路径", "检查 GitHub 更新", "使用说明"})
+        self.app.working_text.insert("1.0", "尚未保存的正文")
+        task = self.store.save_task(self.doc.key, "保留任务", "章节", "保留的内容")
+        doc_folder = self.store.service.document_folder(self.doc.key)
+        image = doc_folder / "assets" / "working" / "image.png"
+        image.parent.mkdir(parents=True)
+        Image.new("RGB", (4, 4), "blue").save(image)
+        old_db = self.store.settings.db_path
+        target = self.root / "新文件库"
+        target.mkdir()
+        with patch("reqdoc_working_document.filedialog.askdirectory", return_value=str(target)), \
+                patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
+            self.button(page, "更改路径").invoke()
+        self.assertTrue(self.app._library_changed)
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.appdata), "REQDOC_V8_DATA": ""}):
+            active = Settings.from_env()
+        self.assertEqual(active.library_root, target)
+        reopened = WorkingStore(active)
+        self.assertEqual(reopened.service.get_requirement(task.id), task)
+        self.assertIn("尚未保存的正文", read_working_document(reopened, self.doc.key))
+        self.assertEqual((reopened.service.document_folder(self.doc.key) / image.relative_to(doc_folder)).read_bytes(),
+                         image.read_bytes())
+        self.assertTrue(old_db.is_file())
+
+    def test_library_switch_keeps_current_path_when_config_write_fails(self):
+        target = self.root / "新文件库"
+        target.mkdir()
+        with patch("reqdoc_studio.write_atomic", side_effect=OSError("模拟配置写入失败")), \
+                self.assertRaises(OSError):
+            self.store.relocate_library(target)
+        self.assertFalse(self.store.settings.library_config.exists())
+        self.assertFalse(list(target.iterdir()))
+        self.assertEqual(self.store.service.document(self.doc.key), self.doc)
+
+    def test_split_merge_replacement_rolls_back_and_keeps_order(self):
+        first = self.store.save_task(self.doc.key, "原任务", "章节", "详情")
+        kept = self.store.save_task(self.doc.key, "后续任务", "章节", "详情")
+        replacement = {"title": "拆分后任务", "section": "章节", "content": "拆分后的详情"}
+        with patch.object(self.store.service.db, "delete_requirements", side_effect=RuntimeError("失败")), \
+                self.assertRaises(RuntimeError):
+            self.store.replace_tasks(self.doc.key, [first.id], [replacement])
+        self.assertEqual(self.store.tasks(self.doc.key), [first, kept])
+        self.store.replace_tasks(self.doc.key, [first.id], [replacement])
+        self.assertEqual([row.title for row in self.store.tasks(self.doc.key)], [replacement["title"], kept.title])
+        self.assertEqual(self.store.tasks(self.doc.key, trash=True), [])
 
     def test_word_import_and_convert_preserve_table_and_prose(self):
         source = self.root / "input.docx"

@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "修复更新后自动重启沿用旧程序的临时目录、导致 Python DLL 加载失败的问题。包含 V8.0.8 的文件占用修复及 V8.0.7 的工作文档改进。",
+                "notes": "任务可直接删除，设置页可更改文件库保存路径。插图仅显示图片和填写的描述。包含自动更新重启修复。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")

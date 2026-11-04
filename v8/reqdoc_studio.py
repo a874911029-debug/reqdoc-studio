@@ -5,7 +5,7 @@ from __future__ import annotations
 import os, sys, re, json, uuid, hashlib, shutil, sqlite3, zipfile, tempfile, logging
 from pathlib import Path
 from datetime import datetime
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from reqdoc.config import Settings
@@ -361,25 +361,51 @@ class Store:
 
     def purge_trashed_tasks(self,key,task_ids):
         """Purge only tasks in this document's trash; never purge live tasks."""
-        chosen=list(dict.fromkeys(int(x) for x in task_ids))
-        if not chosen:raise ValueError('请先选择回收站任务。')
-        permitted={r.id for r in self.tasks(key,trash=True)}
-        if not set(chosen).issubset(permitted):
-            raise ValueError('只能彻底删除当前文档回收站内的任务。')
-        backup=self.backup()
-        with self.conn() as conn:
-            # Match reqdoc.db.Database.connect(): foreign-key cascades must run
-            # when physically deleting engine requirements and related images.
-            conn.execute('PRAGMA foreign_keys = ON')
-            self.service.db.delete_requirements(conn,chosen)
-            for rid in chosen:
-                conn.execute('DELETE FROM studio_trash WHERE id=?',(rid,))
-                conn.execute('DELETE FROM studio_order WHERE id=?',(rid,))
-                conn.execute('DELETE FROM studio_drafts WHERE key=?',(f'task:{key}:{rid}',))
-            # Old snapshots contain the text of deleted tasks; clear stale
-            # snapshots before creating a fresh one from the remaining tasks.
-            conn.execute('DELETE FROM studio_versions WHERE doc=?',(key,))
+        chosen = self._validated_task_ids(task_ids,self.tasks(key,trash=True))
+        backup = self.backup()
+        self.delete_tasks_permanently(key,chosen,trash=True)
         return backup
+
+    def delete_tasks_permanently(self,key,task_ids,*,trash=False):
+        """Remove selected tasks and their Studio metadata from the database."""
+        with self.service.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            chosen = self._validated_task_ids(task_ids,self.tasks(key,trash=trash))
+            self._delete_task_rows(conn,key,chosen)
+            conn.execute('DELETE FROM studio_versions WHERE doc=?',(key,))
+
+    @staticmethod
+    def _validated_task_ids(task_ids,rows):
+        chosen = set(map(int,task_ids))
+        if not chosen:
+            raise ValueError('请先选择当前文档中的任务。')
+        if not chosen.issubset(row.id for row in rows):
+            raise ValueError('选择中有任务不属于当前列表，请重新选择。')
+        return chosen
+
+    def _delete_task_rows(self,conn,key,ids):
+        self.service.db.delete_requirements(conn,ids)
+        conn.executemany('DELETE FROM studio_trash WHERE id=?',[(rid,) for rid in ids])
+        conn.executemany('DELETE FROM studio_order WHERE id=?',[(rid,) for rid in ids])
+        conn.executemany('DELETE FROM studio_drafts WHERE key=?',[(f'task:{key}:{rid}',) for rid in ids])
+
+    def replace_tasks(self,key,task_ids,replacements):
+        """Commit a split or merge together with removal of the replaced tasks."""
+        with self.service.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            rows = self.tasks(key)
+            chosen = self._validated_task_ids(task_ids,rows)
+            first = next(row.id for row in rows if row.id in chosen)
+            new_ids = self.service.commit_task_rows(key,replacements,connection=conn)
+            self._delete_task_rows(conn,key,chosen)
+            order = []
+            for row in rows:
+                if row.id == first:
+                    order.extend(new_ids)
+                if row.id not in chosen:
+                    order.append(row.id)
+            conn.executemany('INSERT OR REPLACE INTO studio_order(id,position) VALUES(?,?)',
+                             [(rid,i*1000) for i,rid in enumerate(order)])
 
     def archive_source(self,key,path,*,connection=None,rollback=None):
         """Archive one original and return its document-relative extracted text."""
@@ -417,6 +443,43 @@ class Store:
             for section,body in split_sections(text):self.save_task(key,section.split(' / ')[-1],section,body)
         self.snapshot(key)
         return warnings
+
+    def relocate_library(self,destination):
+        """Copy the active data to an empty library and switch the startup path."""
+        config = self.settings.library_config
+        if config is None:
+            raise ValueError('此会话通过环境变量指定了文件库路径。')
+        target = Path(destination).resolve(strict=True)
+        source_root = self.settings.library_root.resolve()
+        if target.is_relative_to(source_root) or source_root.is_relative_to(target):
+            raise ValueError('请选择与当前文件库分开的文件夹。')
+        if not target.is_dir() or any(target.iterdir()):
+            raise ValueError('请选择一个空文件夹。')
+        if config.resolve().is_relative_to(target):
+            raise ValueError('请选择应用配置目录之外的文件夹。')
+        with tempfile.TemporaryDirectory(prefix='.reqdoc-move-',dir=target,ignore_cleanup_errors=True) as staging:
+            stage = Path(staging)
+            home = stage / 'home'
+            home.mkdir()
+            with self.conn() as source,sqlite_connection(home/'reqdoc.db') as copied:
+                source.backup(copied)
+                if copied.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                    raise ValueError('复制的数据库未通过完整性检查。')
+            shutil.copytree(self.settings.docs_dir,stage/'docs')
+            moved = []
+            try:
+                for name in ('home','docs'):
+                    dest = target/name
+                    if dest.exists():
+                        raise ValueError('所选目录中出现了同名文件，请重新选择空文件夹。')
+                    (stage/name).rename(dest)
+                    moved.append(name)
+                write_atomic(config,json.dumps({'path':str(target)},ensure_ascii=False).encode('utf-8'))
+            except BaseException:
+                for name in reversed(moved):
+                    (target/name).rename(stage/name)
+                raise
+
     def backup(self,destination=None):
         folder=Path(self.settings.home).parent/'studio-backups';folder.mkdir(parents=True,exist_ok=True)
         path=Path(destination) if destination else folder/(stamp()+'.zip')
@@ -1832,14 +1895,15 @@ class CompactStudioV4(Studio):
         if len(ids)!=1:raise ValueError('请选择一条任务拆分。')
         r=self.s.get_requirement(ids[0]);win=tk.Toplevel(self);win.title('拆分任务');win.transient(self);self.sized_dialog(win,820,680);win.grab_set()
         win.columnconfigure(0,weight=1);win.rowconfigure(1,weight=1)
-        ttk.Label(win,text='在需要拆开的地方插入单独一行 --- 。确认后原任务进入回收站。',padding=12,wraplength=700).grid(row=0,column=0,sticky='ew')
+        ttk.Label(win,text='在需要拆开的地方插入单独一行 --- 。确认后，新任务将替换原任务。',padding=12,wraplength=700).grid(row=0,column=0,sticky='ew')
         frame=ttk.Frame(win,padding=12);frame.grid(row=1,column=0,sticky='nsew');text=self.text_box(frame);text.insert('1.0',r.content)
         footer=ttk.Frame(win,padding=12);footer.grid(row=2,column=0,sticky='ew')
         def commit():
             blocks=[x.strip() for x in re.split(r'^\s*---\s*$',text.get('1.0','end-1c'),flags=re.M) if x.strip()]
             if len(blocks)<2:raise ValueError('至少需要两个部分，请插入一行 --- 。')
-            for i,b in enumerate(blocks):self.store.insert_task(self.key,f'{r.title}（{i+1}）',r.section,b,chapter_end=True)
-            self.store.trash([r.id]);self.store.snapshot(self.key);self.refresh_tasks();self.refresh_progress();win.destroy()
+            replacements=[{'title':f'{r.title}（{i+1}）','section':r.section,'content':block} for i,block in enumerate(blocks)]
+            self.store.replace_tasks(self.key,[r.id],replacements)
+            self.checked_ids.clear();self.store.snapshot(self.key);self.refresh_tasks();self.refresh_progress();win.destroy()
         self.button(footer,'确认拆分',commit);self.button(footer,'取消',win.destroy)
 
     def merge_tasks(self):
@@ -1847,11 +1911,12 @@ class CompactStudioV4(Studio):
         if len(ids)<2:raise ValueError('请勾选至少两条任务。')
         rows=[r for r in self.store.tasks(self.key) if r.id in ids]
         if len(rows)<2:raise ValueError('请从正常任务列表选择任务。')
-        name=simpledialog.askstring('合并任务','合并后的标题',initialvalue=rows[0].title,parent=self)
+        name=simpledialog.askstring('合并任务','合并后的任务将替换所选任务。请输入标题。',initialvalue=rows[0].title,parent=self)
         if not name:return
         body='\n\n'.join('#### '+r.title+'\n'+r.content for r in rows)
-        self.store.insert_task(self.key,name,rows[0].section,body,chapter_end=True);self.store.trash(ids);self.store.snapshot(self.key)
-        self.checked_ids.clear();self.refresh_tasks();self.refresh_progress();self.status.set('已合并任务；原任务保留在回收站。')
+        self.store.replace_tasks(self.key,ids,[{'title':name,'section':rows[0].section,'content':body}])
+        self.store.snapshot(self.key)
+        self.checked_ids.clear();self.refresh_tasks();self.refresh_progress();self.status.set('已合并任务。')
 
     def help(self):
         self.show_text('reqdoc 测试版 4 使用说明','''一、基本结构
@@ -3567,25 +3632,40 @@ def single_instance(home):
 
 def main():
     from reqdoc_working_document import install as install_working_document
-    install_working_document(CompactStudio, Store)
     from reqdoc.bootstrap import prepare_runtime
-    prepare_runtime();settings=Settings.from_env();settings.ensure_directories()
-    logging.basicConfig(filename=str(settings.home/'studio.log'),encoding='utf-8',level=logging.INFO)
     import faulthandler
-    fatal_log=None
-    try:
-        fatal_log=open(Path(settings.home)/'studio-fatal.log','a',encoding='utf-8',buffering=1)
-        faulthandler.enable(file=fatal_log,all_threads=True)
-    except Exception:logging.exception('Fatal error logging unavailable')
-    try:
-        if sys.platform=='win32':
-            import ctypes
-            try:ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:pass
-        lock=single_instance(settings.home)
-        try:CompactStudio(Store(settings)).mainloop()
-        finally:lock.close()
-    except Exception as e:
-        logging.exception('Startup failed');root=tk.Tk();root.withdraw();messagebox.showerror('启动失败',str(e)+'\n日志：'+str(settings.home/'studio.log'));root.destroy()
+
+    install_working_document(CompactStudio, Store)
+    prepare_runtime()
+    if sys.platform=='win32':
+        import ctypes
+        try:ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:pass
+    while True:
+        settings = None
+        try:
+            settings = Settings.from_env()
+            settings.ensure_directories()
+            logging.basicConfig(filename=str(settings.home/'studio.log'),encoding='utf-8',level=logging.INFO,force=True)
+            with ExitStack() as stack:
+                try:
+                    fatal_log = stack.enter_context(open(settings.home/'studio-fatal.log','a',encoding='utf-8',buffering=1))
+                    faulthandler.enable(file=fatal_log,all_threads=True)
+                    stack.callback(faulthandler.disable)
+                except OSError:
+                    logging.exception('Fatal error logging unavailable')
+                stack.enter_context(single_instance(settings.home))
+                app = CompactStudio(Store(settings))
+                app.mainloop()
+            if not getattr(app,'_library_changed',False):
+                return
+        except Exception as e:
+            logging.exception('Startup failed')
+            root = tk.Tk()
+            root.withdraw()
+            log = '\n日志：'+str(settings.home/'studio.log') if settings else ''
+            messagebox.showerror('启动失败',str(e)+log,parent=root)
+            root.destroy()
+            return
 
 if __name__=='__main__':main()
