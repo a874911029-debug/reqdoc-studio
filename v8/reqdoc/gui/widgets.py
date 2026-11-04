@@ -54,7 +54,7 @@ class MarkdownView(ttk.Frame):
                 self.text.image_create("end", image=photo)
                 self._images.append(photo)
                 if match.group(1):
-                    self.text.insert("end", "\\n" + match.group(1) + "\\n")
+                    self.text.insert("end", "\n" + match.group(1) + "\n")
             except Exception:
                 self.text.insert("end", "[图片未能显示：" + match.group(1) + "]")
             cursor = match.end()
