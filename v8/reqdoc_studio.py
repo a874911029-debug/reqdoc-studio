@@ -357,14 +357,13 @@ class Store:
         return None
 
     def delete_project_permanently(self,name):
-        """Original service handles the project and all its member documents."""
+        """Delete the project and its documents without creating a backup."""
         docs=list(self.service.documents_for(name))
         keys=[doc.key for doc in docs]
         task_ids=[r.id for key in keys for r in self.service.list_requirements(project=key)]
-        backup=self.backup()
         self.service.delete_project(name)
         self._cleanup_studio_refs(keys,task_ids)
-        return backup,keys
+        return keys
 
     def purge_trashed_tasks(self,key,task_ids):
         """Purge only tasks in this document's trash; never purge live tasks."""
@@ -2095,7 +2094,7 @@ class CompactStudio(CompactStudioV4):
         ]
         for label,fn in actions:
             ttk.Button(row,text=label,command=lambda f=fn:self.guard(f)).pack(side='left',padx=(0,8))
-        self.project_context=ttk.Label(page,text='可新建、重命名和删除项目与文档；删除前会自动备份。',foreground='#64748B')
+        self.project_context=ttk.Label(page,text='可新建、重命名和删除项目与文档。',foreground='#64748B')
         self.project_context.pack(anchor='w',pady=(0,6))
         frame=ttk.Frame(page);frame.pack(fill='both',expand=True)
         # First (hidden) value stores project name to keep compatibility with existing services.
@@ -3158,7 +3157,6 @@ class CompactStudio(CompactStudioV4):
         if not sel:raise ValueError('请在项目树中选择要删除的项目或文档。')
         item=sel[0]
         self.keep_draft();self.persist_notes()
-        backup=None
         if item.startswith('d:'):
             key=item[2:];doc=self.s.document(key)
             count=len(self.s.list_requirements(project=key))
@@ -3169,17 +3167,19 @@ class CompactStudio(CompactStudioV4):
             ):return
             self.store.delete_document_permanently(key)
             affected=(self.key==key)
+            deleted_kind='文档'
         elif item.startswith('project-'):
             project=self.project_list.item(item,'values')[0]
             docs=list(self.s.documents_for(project))
             count=sum(len(self.s.list_requirements(project=d.key)) for d in docs)
             if not messagebox.askyesno(
                 '删除整个项目',
-                f'确定删除整个项目「{project}」吗？\n将同时删除 {len(docs)} 份文档、{count} 条任务及归档资料。\n\n程序会先完整备份；删除后可从备份恢复。',
+                f'确定删除整个项目「{project}」吗？\n将同时删除 {len(docs)} 份文档、{count} 条任务及归档资料。\n\n此操作不可撤销。',
                 icon='warning',parent=self
             ):return
-            backup,keys=self.store.delete_project_permanently(project)
+            keys=self.store.delete_project_permanently(project)
             affected=(self.key in keys)
+            deleted_kind='项目'
         else:
             raise ValueError('请先选择项目或文档。')
         if affected:
@@ -3188,12 +3188,8 @@ class CompactStudio(CompactStudioV4):
             self.hide_editor();self.clear_task_document('原文档已删除。请重新选择文档。')
         self.current_project_name=None
         self.refresh_tree();self.refresh_tasks();self.refresh_task_selectors('')
-        if backup:
-            self.status.set('项目已删除；删除前备份：'+str(backup))
-            messagebox.showinfo('删除完成','已删除所选项目。完整备份位置：\n'+str(backup),parent=self)
-        else:
-            self.status.set('文档已删除；没有自动创建备份。')
-            messagebox.showinfo('删除完成','已删除所选文档。没有自动创建备份。',parent=self)
+        self.status.set(f'{deleted_kind}已删除。')
+        messagebox.showinfo('删除完成',f'已删除所选{deleted_kind}。',parent=self)
 
     def import_for_tree_selection(self):
         selected=self.project_list.selection()
@@ -3525,7 +3521,7 @@ class CompactStudio(CompactStudioV4):
 
 【进度】统计项目选择器只保留“全部项目”和具体项目名称；选择单个项目后，下方按文档分组，选择分组查看任务。
 
-【删除与备份】删除文档不自动创建备份；需要保留数据时，请先在“设置与数据”中主动备份。删除整个项目仍会先创建备份。原始资料归档不会因编辑任务而改变。
+【删除】删除项目会一并删除项目下的文档、任务及归档资料。原始资料归档不会因编辑任务而改变。
 
 【数据安全】用户数据位于 %LOCALAPPDATA%\\ReqDocStudio\\data，与程序文件分离。更新程序不覆盖用户数据；不要删除最后一份有效数据目录。""")
 

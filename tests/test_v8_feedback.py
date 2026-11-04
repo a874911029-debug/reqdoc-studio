@@ -98,6 +98,31 @@ class FeedbackTests(unittest.TestCase):
         self.app.load_working_document()
         self.assertEqual(self.app.working_text.get("1.0", "end-1c").count(TASK_BLOCK_START), 1)
 
+    def test_delete_project_from_tree_does_not_create_backup(self):
+        task = self.store.save_task(self.doc.key, "待删除任务", "章节", "项目内容")
+        source = self.root / "source.txt"
+        source.write_text("原始资料", encoding="utf-8")
+        self.store.archive_source(self.doc.key, source)
+        folder = self.store.service.document_folder(self.doc.key)
+        other = self.store.service.create_project_group("另一个项目")
+        other_doc = self.store.service.create_document(other.name, "保留的文档")
+        self.app.show_page("projects")
+        self.app.refresh_projects_page()
+        self.app.project_list.selection_set(f"project-{self.project.id}")
+        with patch.object(self.store, "backup", side_effect=AssertionError("backup called")), \
+                patch("reqdoc_studio.messagebox.askyesno", return_value=True) as confirm, \
+                patch("reqdoc_studio.messagebox.showinfo") as notice:
+            self.button(self.app.pages["projects"], "删除选中项").invoke()
+        self.assertIn("不可撤销", confirm.call_args.args[1])
+        notice.assert_called_once_with("删除完成", "已删除所选项目。", parent=self.app)
+        self.assertIsNone(self.app.key)
+        self.assertEqual(self.store.service.project_groups(), [other])
+        self.assertEqual(self.store.service.documents_for(other.name), [other_doc])
+        with self.assertRaises(ValueError):
+            self.store.service.get_requirement(task.id)
+        self.assertFalse(folder.exists())
+        self.assertFalse((self.store.settings.library_root / "studio-backups").exists())
+
     def test_progress_tree_shows_empty_documents_and_keeps_selection(self):
         empty = self.store.service.create_document(self.project.name, "空文档")
         self.app.nav_buttons["progress"].invoke()
