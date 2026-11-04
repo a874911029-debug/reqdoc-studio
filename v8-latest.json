@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.4",
+  "version": "8.0.5",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.4-win64.zip",
-    "size": 24672740,
-    "sha256": "064765d653e7b364dabf3fc1648b1a611eacd79c286777413839cbaeb7d53e8c"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.5-win64.zip",
+    "size": 24715865,
+    "sha256": "31ad99e010bba74f9cb499efc0292c7310be2fb6b023f86e3617455b51ef0a5f"
   },
-  "notes": "文档工作台 V8.0.4：修复动态表格列、原始资料打开、新建与删除文档流程；恢复文档预览与任务编辑并排工作区；简化进度统计筛选。",
-  "source_commit": "b616c75ca44e7420a16518aeaa619b1a1ef298de"
+  "notes": "文档工作台 V8.0.5：新增独立可编辑工作文档；导入文件可形成表格/文档或任务；图片插入与粘贴写入工作文档；任务处理采用 60/40 文档与任务布局；进度分组改为左侧竖向导航，任务明细支持文本选择复制。",
+  "source_commit": "472e28babf3a0c7db6cebab10727b458067bff07"
 }
