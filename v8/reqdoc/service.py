@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -59,12 +60,20 @@ class ReqdocService:
         self.db = Database()
         self.documents = DocumentService(settings, self)
 
+    @contextmanager
     def connect(self):
         connection = sqlite3.connect(str(self.settings.db_path), timeout=15)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=15000")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def initialize(self):
         self.settings.ensure_directories()
