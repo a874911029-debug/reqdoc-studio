@@ -2065,7 +2065,7 @@ class CompactStudio(CompactStudioV4):
         self.build_home_page();self.build_projects_page();self.build_documents_page();self.build_import_page()
         self.build_tasks_page();self.build_progress_page();self.build_export_page();self.build_settings_page();self.build_aux()
         self.status=tk.StringVar(value='就绪 · 数据保存在本机')
-        ttk.Label(self,textvariable=self.status,padding=(12,5)).pack(fill='x')
+        ttk.Label(self,textvariable=self.status,style='Status.TLabel').pack(fill='x')
         self.show_page('projects')
         self._refresh_tree_after_id=self.after(50,self.refresh_tree)
         self._file_drop=None
@@ -2268,7 +2268,8 @@ class CompactStudio(CompactStudioV4):
         for start in (0,3):
             row=ttk.Frame(primary);row.pack(fill='x',anchor='w')
             for label,action in primary_items[start:start+3]:
-                ttk.Button(row,text=label,command=lambda fn=action:self.guard(fn)).pack(side='left',padx=(0,6),pady=2)
+                style = 'Accent.TButton' if label == '＋ 新增任务' else 'TButton'
+                ttk.Button(row,text=label,style=style,command=lambda fn=action:self.guard(fn)).pack(side='left',padx=(0,6),pady=2)
         listframe=ttk.Frame(task_list_panel);listframe.pack(fill='both',expand=True)
         self.list=ttk.Treeview(listframe,columns=('check','state','title','chapter'),show='headings',selectmode='extended')
         for col,label,width in [('check','选择',48),('state','状态',76),('title','任务标题',250),('chapter','所属章节',160)]:
@@ -2332,7 +2333,7 @@ class CompactStudio(CompactStudioV4):
         for var in (self.titlevar,self.chaptervar):var.trace_add('write',self.changed)
         self.done_var.trace_add('write',self.changed)
         editactions=ttk.Frame(editor);editactions.pack(fill='x',pady=(5,0))
-        ttk.Button(editactions,text='保存任务',command=lambda:self.guard(self.save_task)).pack(side='left',padx=(0,5))
+        ttk.Button(editactions,text='保存任务',style='Accent.TButton',command=lambda:self.guard(self.save_task)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='插入图片',command=lambda:self.guard(self.add_image)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='粘贴图片',command=lambda:self.guard(self.paste_image)).pack(side='left',padx=(0,5))
         ttk.Button(editactions,text='取消本次编辑',command=lambda:self.guard(self.cancel_edit)).pack(side='right')
