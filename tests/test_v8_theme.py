@@ -18,7 +18,7 @@ class WorkspaceThemeTests(unittest.TestCase):
         self.assertEqual(style.lookup("Treeview", "fieldbackground"), "#FFFFFF")
         self.assertEqual(style.lookup("Status.TLabel", "background"), "#F2F5FA")
         self.assertEqual(style.lookup("Accent.TButton", "background"), "#2F6FB3")
-        self.assertEqual(style.lookup("Treeview", "rowheight"), 30)
+        self.assertEqual(int(style.lookup("Treeview", "rowheight")), 30)
 
 
 if __name__ == "__main__":
