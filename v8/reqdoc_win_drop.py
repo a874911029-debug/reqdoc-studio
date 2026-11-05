@@ -12,20 +12,37 @@ _ALLOWED={'.docx','.md','.markdown','.txt'}
 
 
 def select_drop_files(paths):
-    """Validate imported paths from dialog/drop; never accept dirs or scripts."""
-    paths=list(paths)
-    if len(paths)>20:raise ValueError('一次最多拖入 20 个文件，请分批导入。')
-    kept=[];rejected=[];seen=set()
+    """Validate imported paths from dialog/drop; preserve Unicode Windows paths."""
+    paths = list(paths)
+    if len(paths) > 20:
+        raise ValueError("一次最多拖入 20 个文件，请分批导入。")
+    kept = []
+    rejected = []
+    seen = set()
     for raw in paths:
-        path=Path(str(raw))
-        if path.suffix.lower() not in _ALLOWED or not path.is_file():
-            rejected.append(path.name or str(path))
-            continue
-        resolved=str(path.resolve())
-        key=resolved.casefold()
-        if key not in seen:
-            seen.add(key);kept.append(resolved)
-    return kept,rejected
+        try:
+            path = Path(str(raw))
+            name = path.name or str(raw)
+            if path.suffix.lower() not in _ALLOWED:
+                rejected.append(name)
+                continue
+            # Strict resolution rejects vanished, inaccessible and malformed paths
+            # before the import UI opens. pathlib uses the Unicode Win32 APIs.
+            resolved_path = path.resolve(strict=True)
+            if not resolved_path.is_file():
+                rejected.append(name)
+                continue
+            resolved = str(resolved_path)
+            key = resolved.casefold()
+            if key not in seen:
+                seen.add(key)
+                kept.append(resolved)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            try:
+                rejected.append(Path(str(raw)).name or str(raw))
+            except (OSError, RuntimeError, TypeError, ValueError):
+                rejected.append(str(raw))
+    return kept, rejected
 
 
 class WindowsFileDrop:
