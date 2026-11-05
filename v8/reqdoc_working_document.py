@@ -2387,44 +2387,102 @@ def build_settings_page(self):
     from version import VERSION
 
     page = self.pages["settings"]
-    self.page_title(page, "设置与数据", "管理文件库、整理规则备份和软件更新。")
-    box = ttk.LabelFrame(page, text="文件库保存路径", padding=12)
-    box.pack(fill="x")
-    ttk.Label(box, text=str(self.store.settings.library_root), wraplength=600).pack(anchor="w", pady=(0, 8))
-    if self.store.settings.portable:
-        ttk.Label(box, text="资料库随软件文件夹一起移动。", foreground="#64748B").pack(anchor="w")
-        ttk.Button(box, text="打开资料库文件夹", command=lambda: self.open_path(self.store.settings.library_root)).pack(anchor="w")
-    else:
-        ttk.Button(box, text="更改路径", command=lambda: self.guard(lambda: change_library_folder(self))).pack(anchor="w")
+    self.page_title(page, "设置与数据", "本地文件库、整理规则和软件版本，集中管理。")
 
-    rules_box = ttk.LabelFrame(page, text="整理规则备份", padding=12)
-    rules_box.pack(fill="x", pady=(10, 0))
+    # Two-column page: editable data settings in the central column, concise
+    # metadata/update inspector on the right, matching the document workspace.
+    content = ttk.Frame(page)
+    content.pack(fill="both", expand=True)
+    inspector = ttk.Frame(content, width=266, style="Sidebar.TFrame", padding=(16, 17))
+    inspector.pack(side="right", fill="y")
+    inspector.pack_propagate(False)
+    main = ttk.Frame(content, padding=(0, 8, 24, 0))
+    main.pack(side="left", fill="both", expand=True)
+
+    ttk.Label(main, text="文件库位置", font=("Microsoft YaHei UI", 12, "bold")).pack(
+        anchor="w", pady=(4, 12)
+    )
     ttk.Label(
-        rules_box,
-        text="完整备份包含数据库、文档、图片和本地整理规则。可以从备份包单独恢复整理规则；恢复前会自动备份当前数据。",
-        foreground="#52647B", wraplength=900, justify="left",
-    ).pack(anchor="w", pady=(0, 8))
+        main, text=str(self.store.settings.library_root),
+        wraplength=660, foreground="#3B4A61", justify="left",
+    ).pack(anchor="w", fill="x", pady=(0, 6))
+    ttk.Label(
+        main, text="数据库、文档、图片与整理规则保存在这里。",
+        foreground="#7E8897",
+    ).pack(anchor="w", pady=(0, 10))
+    if self.store.settings.portable:
+        ttk.Label(
+            main, text="资料库可随软件文件夹一起移动。",
+            foreground="#6D7583",
+        ).pack(anchor="w", pady=(0, 10))
+        ttk.Button(
+            main, text="打开资料库文件夹",
+            command=lambda: self.open_path(self.store.settings.library_root),
+        ).pack(anchor="w")
+    else:
+        ttk.Button(
+            main, text="更改路径",
+            command=lambda: self.guard(lambda: change_library_folder(self)),
+        ).pack(anchor="w")
+
+    ttk.Separator(main, orient="horizontal").pack(fill="x", pady=(25, 23))
+    ttk.Label(main, text="整理规则备份", font=("Microsoft YaHei UI", 12, "bold")).pack(
+        anchor="w", pady=(0, 12)
+    )
+    ttk.Label(
+        main,
+        text="完整备份包含数据库、文档、图片和本地整理规则。可以从备份包只恢复整理规则，恢复前会先备份当前数据。",
+        foreground="#6C7887", wraplength=660, justify="left",
+    ).pack(anchor="w", fill="x", pady=(0, 12))
     ttk.Button(
-        rules_box, text="从备份恢复整理规则",
+        main, text="从备份恢复整理规则",
         command=lambda: self.guard(lambda: restore_organization_rules(self)),
     ).pack(anchor="w")
 
-    update_box = ttk.LabelFrame(page, text="软件更新 · GitHub", padding=12)
-    update_box.pack(fill="x", pady=(10, 0))
-    self.update_status_var = tk.StringVar(value=f"当前版本：V{VERSION} · GitHub 单仓库更新")
-    ttk.Label(update_box, textvariable=self.update_status_var, foreground="#52647B").pack(
-        side="left", fill="x", expand=True
-    )
+    ttk.Label(
+        inspector, text="工作区信息", style="Sidebar.TLabel",
+        font=("Microsoft YaHei UI", 11, "bold"),
+    ).pack(anchor="w", pady=(0, 17))
+    ttk.Label(
+        inspector, text="数据存储", style="Sidebar.TLabel",
+        foreground="#808B9B",
+    ).pack(anchor="w")
+    ttk.Label(
+        inspector, text="本地 · 可移动文件库" if self.store.settings.portable else "本地 · 自定义目录",
+        style="Sidebar.TLabel", font=("Microsoft YaHei UI", 9, "bold"),
+    ).pack(anchor="w", pady=(3, 20))
+    ttk.Label(
+        inspector, text="软件版本", style="Sidebar.TLabel",
+        foreground="#808B9B",
+    ).pack(anchor="w")
+    ttk.Label(
+        inspector, text=f"ReqDoc Studio V{VERSION}", style="Sidebar.TLabel",
+        font=("Microsoft YaHei UI", 10, "bold"),
+    ).pack(anchor="w", pady=(3, 18))
+    ttk.Separator(inspector, orient="horizontal").pack(fill="x", pady=(0, 17))
+    ttk.Label(
+        inspector, text="软件更新", style="Sidebar.TLabel",
+        font=("Microsoft YaHei UI", 11, "bold"),
+    ).pack(anchor="w", pady=(0, 8))
+    self.update_status_var = tk.StringVar(value=f"当前版本：V{VERSION} · GitHub 更新")
+    ttk.Label(
+        inspector, textvariable=self.update_status_var,
+        style="Sidebar.TLabel", wraplength=230, justify="left",
+        foreground="#59687B",
+    ).pack(fill="x", anchor="w", pady=(0, 12))
     self.update_button = ttk.Button(
-        update_box, text="检查 GitHub 更新",
+        inspector, text="检查 GitHub 更新",
         command=lambda: self.guard(self.check_github_update),
     )
-    self.update_button.pack(side="right")
+    self.update_button.pack(fill="x")
     self._update_queue = None
     self._update_in_progress = False
     self._update_poll_after_id = None
-    ttk.Button(page, text="使用说明", command=lambda: self.guard(self.help)).pack(anchor="w", pady=(10, 0))
-
+    ttk.Separator(inspector, orient="horizontal").pack(fill="x", pady=(23, 16))
+    ttk.Button(
+        inspector, text="使用说明",
+        command=lambda: self.guard(self.help),
+    ).pack(fill="x")
 
 
 
