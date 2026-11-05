@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.16",
+  "version": "8.0.17",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.16-win64.zip",
-    "size": 24774748,
-    "sha256": "1fc6e9d7dc7612c84d5b9cab55531d45c53ff2d948b126b7230f4bbb23f0f39c"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.17-win64.zip",
+    "size": 24773240,
+    "sha256": "c2e33ebb1636e944ed3a02eb14545ffe4629006a17b8d86e26216a391e06c1e7"
   },
-  "notes": "完善一键整理：无标题散记分块、正文相似归类、可保存的关键词规则、重复合并、数值与否定差异核对。提供归类说明和待归类内容，后台运行可取消，结果单独保存。",
-  "source_commit": "8c78c4e4ce9e0224eb3f81e56aaf09006ea6475a"
+  "notes": "增加删除当前副本，可删除导入副本和整理结果，重新打开后保持删除状态。包含完善的一键整理规则、正文主题归类、相近内容核对与规则记忆。",
+  "source_commit": "f0d41d7dc8443292ecf3ac99fecf10a1014c4aec"
 }
