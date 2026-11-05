@@ -613,7 +613,7 @@ class FeedbackTests(unittest.TestCase):
         self.app.show_page("settings")
         page = self.app.pages["settings"]
         labels = {button.cget("text") for button in widgets(page, ttk.Button)}
-        self.assertEqual(labels, {"更改路径", "检查 GitHub 更新", "使用说明"})
+        self.assertEqual(labels, {"更改路径", "从备份恢复整理规则", "检查 GitHub 更新", "使用说明"})
         self.app.working_text.insert("1.0", "尚未保存的正文")
         task = self.store.save_task(self.doc.key, "保留任务", "章节", "保留的内容")
         doc_folder = self.store.service.document_folder(self.doc.key)
