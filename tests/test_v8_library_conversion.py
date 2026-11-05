@@ -282,7 +282,7 @@ class LibraryConversionTests(unittest.TestCase):
 
     def test_source_task_conflict_can_choose_source_content(self):
         app = self.app()
-        source_content = "## 灯光\\n\\n照明使用暖色调。"
+        source_content = "## 灯光\n\n照明使用暖色调。"
         item = conversion_items(source_content)[0]
         task = self.store.save_task(
             self.doc.key, item["title"], item["section"], item["content"]
@@ -291,7 +291,7 @@ class LibraryConversionTests(unittest.TestCase):
         with self.store.conn() as conn:
             write_import_copy(conn, self.doc.key, copy_id, "灯光资料.md", source_content)
             save_import_task_link(conn, self.doc.key, copy_id, task.id, 0, item)
-        task_edit = item["content"] + "\\n任务侧补充限制。"
+        task_edit = item["content"] + "\n任务侧补充限制。"
         self.store.save_task(
             self.doc.key, item["title"], item["section"], task_edit, rid=task.id
         )
@@ -325,7 +325,7 @@ class LibraryConversionTests(unittest.TestCase):
         folder.mkdir()
         good = folder / "场景说明.md"
         bad = folder / "损坏文件.txt"
-        good.write_text("# 场景说明\\n\\n保留这份内容。", encoding="utf-8")
+        good.write_text("# 场景说明\n\n保留这份内容。", encoding="utf-8")
         bad.write_text("unreadable", encoding="utf-8")
 
         def reader(path):
