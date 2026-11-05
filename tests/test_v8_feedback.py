@@ -75,6 +75,10 @@ class FeedbackTests(unittest.TestCase):
     def test_document_first_workspace_has_topbar_tree_and_inspector(self):
         self.app.update_idletasks()
         self.assertTrue(self.app.doc_sidebar.winfo_ismapped())
+        self.app.toggle_sidebar()
+        self.assertFalse(self.app.doc_sidebar.winfo_manager())
+        self.app.toggle_sidebar()
+        self.assertTrue(self.app.doc_sidebar.winfo_manager())
         self.assertTrue(self.app.nav_buttons["tasks"].winfo_ismapped())
         self.assertIs(self.app.nav_buttons["tasks"].master, self.app.nav)
 
