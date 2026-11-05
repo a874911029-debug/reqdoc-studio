@@ -72,6 +72,14 @@ class FeedbackTests(unittest.TestCase):
     def button(self, parent, label):
         return next(widgets(parent, ttk.Button, label))
 
+    def wait_for_organization(self, dialog):
+        save = self.button(dialog, "另存整理文档")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and save.instate(["disabled"]):
+            self.app.update()
+            time.sleep(0.01)
+        self.assertFalse(save.instate(["disabled"]), "organization did not finish")
+
     def test_organize_saves_separate_document_without_task_changes(self):
         first = self.root / "甲.md"
         second = self.root / "乙.txt"
@@ -88,6 +96,7 @@ class FeedbackTests(unittest.TestCase):
 
         self.button(self.app.task_working_panel, "一键整理").invoke()
         dialog = next(win for win in widgets(self.app, tk.Toplevel) if win.title() == "一键整理资料")
+        self.wait_for_organization(dialog)
         preview = next(widgets(dialog, tk.Text))
         result = preview.get("1.0", "end-1c")
         self.assertEqual(result.count("共有段落"), 1)
@@ -109,6 +118,68 @@ class FeedbackTests(unittest.TestCase):
         self.app.load_working_document()
         self.assertIn("再编辑", self.app.working_text.get("1.0", "end-1c"))
         self.assertEqual(self.store.tasks(self.doc.key), before)
+
+    def test_organize_rules_persist_and_cancel_does_not_save_document(self):
+        import json
+
+        self.app.working_text.insert("1.0", "照明使用暖色调。\n\n纹理使用石材。")
+        self.button(self.app.task_working_panel, "一键整理").invoke()
+        dialog = next(win for win in widgets(self.app, tk.Toplevel) if win.title() == "一键整理资料")
+        self.wait_for_organization(dialog)
+        self.button(dialog, "整理规则").invoke()
+        editor = next(win for win in widgets(dialog, tk.Toplevel) if win.title() == "整理规则")
+        rule_text = next(widgets(editor, tk.Text))
+        rule_text.insert("1.0", "材质 = 纹理\n灯光 = 照明")
+        self.button(editor, "应用规则").invoke()
+        self.assertTrue(self.button(dialog, "另存整理文档").instate(["disabled"]))
+        self.button(dialog, "重新整理所选资料").invoke()
+        self.wait_for_organization(dialog)
+        preview = next(widgets(dialog, tk.Text)).get("1.0", "end-1c")
+        self.assertLess(preview.index("## 材质"), preview.index("## 灯光"))
+        preferences = json.loads((self.store.settings.home / "organize-rules.json").read_text("utf-8"))
+        self.assertEqual(preferences["rules_text"], "材质 = 纹理\n灯光 = 照明")
+        self.button(dialog, "取消").invoke()
+        with self.store.conn() as conn:
+            self.assertFalse(conn.execute("SELECT id FROM studio_import_copies WHERE doc=?", (self.doc.key,)).fetchall())
+        self.assertFalse(self.store.tasks(self.doc.key))
+
+    def test_organize_keeps_task_marker_examples_inside_imported_code(self):
+        source = self.root / "代码范例.md"
+        content = "```md\n<!-- reqdoc:tasks -->\n保留的范例\n<!-- /reqdoc:tasks -->\n```"
+        source.write_text(content, encoding="utf-8")
+        imported = self.app.import_paths([source])
+        self.button(imported, "确认导入").invoke()
+        self.button(self.app.task_working_panel, "一键整理").invoke()
+        dialog = next(win for win in widgets(self.app, tk.Toplevel) if win.title() == "一键整理资料")
+        self.wait_for_organization(dialog)
+        self.assertIn(content, next(widgets(dialog, tk.Text)).get("1.0", "end-1c"))
+        self.button(dialog, "取消").invoke()
+
+    def test_organize_can_close_while_background_work_is_running(self):
+        import threading
+        from reqdoc_organize import OrganizationCancelled
+
+        self.app.working_text.insert("1.0", "后台整理测试正文")
+        started = threading.Event()
+        stopped = threading.Event()
+
+        def slow_work(materials, options, *, cancel):
+            started.set()
+            deadline = time.monotonic() + 3
+            while not cancel() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stopped.set()
+            raise OrganizationCancelled()
+
+        with patch("reqdoc_organize_dialog.organize_with_report", side_effect=slow_work):
+            self.button(self.app.task_working_panel, "一键整理").invoke()
+            self.assertTrue(started.wait(2))
+            dialog = next(win for win in widgets(self.app, tk.Toplevel) if win.title() == "一键整理资料")
+            self.button(dialog, "取消").invoke()
+            self.assertTrue(stopped.wait(2))
+            self.app.update()
+        with self.store.conn() as conn:
+            self.assertFalse(conn.execute("SELECT id FROM studio_import_copies WHERE doc=?", (self.doc.key,)).fetchall())
 
     @unittest.skipUnless(sys.platform == "win32", "requires Windows native messages")
     def test_native_file_drop_on_document_editor(self):

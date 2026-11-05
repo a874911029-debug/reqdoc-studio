@@ -18,7 +18,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from reqdoc.gui.widgets import DOCUMENT_FONT, configure_document_styles, style_document_lines
-from reqdoc_organize import ORGANIZED_PREFIX, organize_materials
+from reqdoc_organize import ORGANIZED_PREFIX
 
 
 TASK_BLOCK_START = "<!-- reqdoc:tasks -->"
@@ -1716,6 +1716,8 @@ def export_working_document(self, kind):
 
 
 def organize_working_materials(self):
+    from reqdoc_organize_dialog import open_organize_dialog
+
     self.require_doc()
     key = self.key
     with self.store.conn() as conn:
@@ -1733,72 +1735,29 @@ def organize_working_materials(self):
             text = main_row[0] if main_row else ""
         else:
             _, text = read_import_copy(self.store, key, copy_id)
-        text = TASK_BLOCK.sub("", text)
         if text.strip():
             sources.append((label if copy_id else "工作文档", text))
     if not sources:
         raise ValueError("请先输入正文，或导入要整理的文件。")
 
-    win = tk.Toplevel(self)
-    win.title("一键整理资料")
-    self.sized_dialog(win, 850, 620)
-    win.transient(self)
-    win.grab_set()
-    panel = ttk.Frame(win, padding=12)
-    panel.pack(fill="both", expand=True)
-    ttk.Label(panel, text="选择要整理的资料。同名章节会归在一起，重复段块合并并保留来源。", wraplength=780).pack(anchor="w")
-    picker = ttk.Frame(panel)
-    picker.pack(fill="x", pady=(6, 8))
-    names = tk.Listbox(picker, selectmode="extended", exportselection=False, height=min(6, len(sources)))
-    scrollbar = ttk.Scrollbar(picker, orient="vertical", command=names.yview)
-    names.configure(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side="right", fill="y")
-    names.pack(side="left", fill="x", expand=True)
-    for label, _ in sources:
-        names.insert("end", label)
-    names.selection_set(0, "end")
-
-    preview = tk.Text(panel, wrap="word", padx=8, pady=8, undo=True)
-    footer = ttk.Frame(panel)
-    footer.pack(side="bottom", fill="x", pady=(8, 0))
-    preview_scroll = ttk.Scrollbar(panel, orient="vertical", command=preview.yview)
-    preview.configure(yscrollcommand=preview_scroll.set)
-    preview_scroll.pack(side="right", fill="y")
-    preview.pack(side="left", fill="both", expand=True)
-
-    def refresh():
-        selected = [sources[index] for index in names.curselection()]
-        content = organize_materials(selected)
-        validate_working_content(content)
-        preview.delete("1.0", "end")
-        preview.insert("1.0", content)
-        preview.edit_reset()
-        save_button.state(["!disabled"])
-
-    def save_result():
-        content = preview.get("1.0", "end-1c")
+    def save_result(content):
+        if self.key != key:
+            raise ValueError("当前文档已切换，请重新打开整理窗口。")
         if not content.strip():
             raise ValueError("整理结果为空。")
         name = datetime.now().strftime("整理结果 %Y-%m-%d %H-%M-%S")
         copy_id = ORGANIZED_PREFIX + uuid.uuid4().hex
         with self.store.conn() as conn:
             write_import_copy(conn, key, copy_id, name, content)
-        win.destroy()
         if not self._working_dirty and not self.working_text.edit_modified():
             self._working_copy_id = copy_id
             self.load_working_document()
         else:
             refresh_working_views(self)
         self.status.set(f"已另存为「{name}」，可在‘显示文档’下拉框打开。")
+        return True
 
-    ttk.Button(footer, text="重新整理所选资料", command=lambda: self.guard(refresh)).pack(side="left")
-    ttk.Button(footer, text="取消", command=win.destroy).pack(side="right", padx=(6, 0))
-    save_button = ttk.Button(footer, text="另存整理文档", command=lambda: self.guard(save_result))
-    save_button.pack(side="right")
-    save_button.state(["disabled"])
-    names.bind("<<ListboxSelect>>", lambda event: save_button.state(["disabled"]))
-    self.guard(refresh)
-    return win
+    return open_organize_dialog(self, sources, save_result)
 
 
 def preview_working_document(self):
