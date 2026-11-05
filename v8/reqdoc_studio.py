@@ -2031,7 +2031,7 @@ class CompactStudio(CompactStudioV4):
         except Exception:pass
 
     def build(self):
-        self.title(f'文档工作台 · {VERSION}')
+        self.title(f'文档工作台 · {VERSION} · 三栏界面候选版')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
         self.minsize(900,600)
