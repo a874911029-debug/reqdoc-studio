@@ -22,6 +22,7 @@ def configure_theme(root):
     # The app shell stays light grey; the content workspace and editors are white.
     style.configure("TFrame", background=white)
     style.configure("Sidebar.TFrame", background="#F8F9FC")
+    style.configure("Sidebar.TLabel", background="#F8F9FC", foreground=ink, font=font)
     style.configure(
         "Sidebar.Treeview", background="#F8F9FC", fieldbackground="#F8F9FC",
         foreground=ink, rowheight=32, borderwidth=0,
