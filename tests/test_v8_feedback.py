@@ -80,6 +80,18 @@ class FeedbackTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertFalse(save.instate(["disabled"]), "organization did not finish")
 
+    def convert_preview(self, commit=True):
+        dialog = self.app.convert_working_document()
+        button = self.button(dialog, "确认生成任务")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and button.instate(["disabled"]):
+            self.app.update()
+            time.sleep(0.01)
+        self.assertFalse(button.instate(["disabled"]))
+        if commit:
+            button.invoke()
+        return dialog
+
     def test_organize_saves_separate_document_without_task_changes(self):
         first = self.root / "甲.md"
         second = self.root / "乙.txt"
@@ -192,12 +204,11 @@ class FeedbackTests(unittest.TestCase):
         self.button(imported, "确认导入").invoke()
         copy_id = self.app._working_copy_id
         copy_label = self.app.working_view_var.get()
-        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
-            self.app.convert_working_document()
+        self.convert_preview()
         tasks = self.store.tasks(self.doc.key)
         self.assertTrue(tasks)
         self.app.working_text.insert("end", "未保存的修改")
-        button = self.button(self.app.task_working_panel, "删除当前副本")
+        button = self.app.delete_copy_button
         self.assertFalse(button.instate(["disabled"]))
         with patch("reqdoc_working_document.messagebox.askyesno", return_value=False):
             button.invoke()
@@ -207,15 +218,15 @@ class FeedbackTests(unittest.TestCase):
             button.invoke()
         self.assertNotIn(copy_label, self.app._working_view_ids)
         self.assertIsNone(self.app._working_copy_id)
-        self.assertTrue(button.instate(["disabled"]))
+        self.assertFalse(button.instate(["disabled"]))
+        self.assertEqual(button.cget("text"), "删除当前文档")
         self.assertEqual(self.store.tasks(self.doc.key), tasks)
         self.assertTrue(any("保留.md" in label for label in self.app._working_view_ids))
         reopened = WorkingStore(self.store.settings)
         with self.assertRaises(ValueError):
             read_import_copy(reopened, self.doc.key, copy_id)
         with reopened.conn() as conn:
-            archived = conn.execute("SELECT stored FROM studio_sources WHERE doc=? AND id=?", (self.doc.key, copy_id)).fetchone()[0]
-            self.assertTrue((self.store.settings.docs_dir / archived).is_file())
+            self.assertIsNone(conn.execute("SELECT stored FROM studio_sources WHERE doc=? AND id=?", (self.doc.key, copy_id)).fetchone())
             self.assertFalse(conn.execute("SELECT 1 FROM studio_import_task_links WHERE doc=? AND copy_id=?", (self.doc.key, copy_id)).fetchone())
         with self.assertRaises(ValueError), reopened.conn() as conn:
             write_import_copy(conn, self.doc.key, copy_id, first.name, "旧回调写入")
@@ -237,7 +248,7 @@ class FeedbackTests(unittest.TestCase):
         on_working_view_selected(self.app)
         copy_id = self.app._working_copy_id
         with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
-            self.button(self.app.task_working_panel, "删除当前副本").invoke()
+            self.app.delete_copy_button.invoke()
         self.app.load_working_document()
         self.assertNotIn(label, self.app._working_view_ids)
         with self.store.conn() as conn:
@@ -461,9 +472,9 @@ class FeedbackTests(unittest.TestCase):
         dialog = self.app.import_paths([first_file, second_file])
         self.button(dialog, "确认导入").invoke()
         self.assertEqual(text.get("1.0", "end-1c"), first_file.read_text("utf-8"))
-        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
-            self.app.convert_working_document()
-            self.app.convert_working_document()
+        self.convert_preview()
+        repeated = self.convert_preview(commit=False)
+        self.button(repeated, "取消").invoke()
         task, = self.store.tasks(self.doc.key)
         self.store.service.set_done(task.id, True)
         text.replace("3.0", "end-1c", "更新后的详情")

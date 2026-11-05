@@ -75,6 +75,14 @@ def ensure_working_schema(store):
                 PRIMARY KEY(doc,id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS studio_conversion_modes(
+                doc TEXT NOT NULL,
+                copy_id TEXT NOT NULL,
+                settings TEXT NOT NULL,
+                PRIMARY KEY(doc,copy_id)
+            )
+        """)
 
 
 def read_working_document(store, key, fallback=""):
@@ -142,11 +150,12 @@ def read_import_copy(store, key, copy_id):
         return row
 
 
-def delete_editable_copy(store, key, copy_id):
+def delete_editable_copy(store, key, copy_id, *, connection=None):
     if not copy_id:
         raise ValueError("请先在‘显示文档’中选择要删除的副本。")
-    ensure_working_schema(store)
-    with store.conn() as conn:
+    if connection is None:
+        ensure_working_schema(store)
+    with (store.conn() if connection is None else nullcontext(connection)) as conn:
         if conn.execute("SELECT 1 FROM studio_deleted_copies WHERE doc=? AND id=?", (key, copy_id)).fetchone():
             return False
         existing = conn.execute("""
@@ -158,6 +167,7 @@ def delete_editable_copy(store, key, copy_id):
         conn.execute("INSERT INTO studio_deleted_copies(doc,id) VALUES(?,?)", (key, copy_id))
         conn.execute("DELETE FROM studio_import_copies WHERE doc=? AND id=?", (key, copy_id))
         conn.execute("DELETE FROM studio_import_task_links WHERE doc=? AND copy_id=?", (key, copy_id))
+        conn.execute("DELETE FROM studio_conversion_modes WHERE doc=? AND copy_id=?", (key, copy_id))
     return True
 
 
@@ -192,6 +202,7 @@ def delete_working_documents(store, keys):
         conn.executemany("DELETE FROM studio_import_copies WHERE doc=?", keys)
         conn.executemany("DELETE FROM studio_import_task_links WHERE doc=?", keys)
         conn.executemany("DELETE FROM studio_deleted_copies WHERE doc=?", keys)
+        conn.executemany("DELETE FROM studio_conversion_modes WHERE doc=?", keys)
 
 
 def import_item_values(item):
@@ -202,8 +213,9 @@ def import_task_links(conn, key, copy_id):
     return [
         (task_id, position, json.loads(source))
         for task_id, position, source in conn.execute(
-            "SELECT task_id,position,source_item FROM studio_import_task_links "
-            "WHERE doc=? AND copy_id=? ORDER BY position,task_id", (key, copy_id)
+            """SELECT task_id,l.position,source_item FROM studio_import_task_links l
+               JOIN reqdoc_requirements r ON r.id=l.task_id AND r.project=l.doc
+               WHERE l.doc=? AND copy_id=? ORDER BY l.position,task_id""", (key, copy_id)
         )
     ]
 
@@ -266,7 +278,8 @@ def sync_import_tasks(conn, key, copy_id, content):
     links = import_task_links(conn, key, copy_id)
     if not links:
         return False
-    items = document_to_task_items(content)
+    from reqdoc_task_conversion import conversion_items, conversion_settings
+    items = conversion_items(content, conversion_settings(conn, key, copy_id))
     changed = False
     for position, (task_id, previous) in match_import_task_links(links, items).items():
         current = import_item_values(items[position])
@@ -297,7 +310,8 @@ def document_to_task_items(content):
     from reqdoc_studio import _section_parser, split_sections, import_task_title
     from reqdoc_source_table import tables_in, table_to_task_items, task_title_column
 
-    content = TASK_BLOCK.sub("", content).strip()
+    from reqdoc_task_conversion import strip_task_block
+    content = strip_task_block(content)
     if not content:
         return []
 
@@ -616,7 +630,7 @@ def build_tasks_page(self):
     export.configure(menu=export_menu)
     export.pack(side="left")
     ttk.Button(tools, text="一键整理", command=lambda: self.guard(lambda: organize_working_materials(self))).pack(side="left", padx=(5, 0))
-    self.delete_copy_button = ttk.Button(tools, text="删除当前副本", command=lambda: self.guard(self.delete_current_copy))
+    self.delete_copy_button = ttk.Button(tools, text="删除当前文档", command=lambda: self.guard(self.delete_current_copy))
     self.delete_copy_button.pack(side="left", padx=(5, 0))
     self.delete_copy_button.state(["disabled"])
     self.working_hint = ttk.Label(
@@ -1128,7 +1142,11 @@ def on_working_view_selected(self):
 
 
 def load_working_document(self):
-    self.delete_copy_button.state(["!disabled"] if self.key and self._working_copy_id is not None else ["disabled"])
+    label = "删除当前文档"
+    if self._working_copy_id:
+        label = "删除整理文档" if self._working_copy_id.startswith(ORGANIZED_PREFIX) else "删除历史记录"
+    self.delete_copy_button.configure(text=label)
+    self.delete_copy_button.state(["!disabled"] if self.key else ["disabled"])
     if not self.key:
         self._working_saved_key = None
         self._working_copy_id = None
@@ -1183,7 +1201,10 @@ def save_working_document(self, silent=False):
         content = self.working_text.get("1.0", "end-1c")
     tasks_changed = False
     if self._working_copy_id is None:
-        write_working_document(self.store, self.key, content, self._working_mode)
+        from reqdoc_task_conversion import MAIN_COPY_ID
+        with self.s.connect() as conn:
+            write_working_document(self.store, self.key, content, self._working_mode, connection=conn)
+            tasks_changed = sync_import_tasks(conn, self.key, MAIN_COPY_ID, content)
     else:
         with self.s.connect() as conn:
             write_import_copy(conn, self.key, self._working_copy_id, self._working_copy_name, content)
@@ -1209,20 +1230,28 @@ def delete_current_copy(self):
     self.require_doc()
     copy_id = self._working_copy_id
     if copy_id is None:
-        raise ValueError("请先在‘显示文档’中选择要删除的副本。")
+        self.project_list.selection_set("d:" + self.key)
+        self.delete_project_or_document()
+        return
     name = self._working_copy_name
+    history = not copy_id.startswith(ORGANIZED_PREFIX)
     if not messagebox.askyesno(
-        "删除当前副本",
-        f"删除副本「{name}」及其编辑内容？\n该副本与任务的同步关联也会移除。\n\n删除后无法撤销。任务请在任务列表中单独管理。",
+        "删除历史记录" if history else "删除整理文档",
+        f"删除「{name}」及其编辑内容？\n该文档与任务的同步关联也会移除。\n\n删除后无法撤销。任务请在任务列表中单独管理。",
         parent=self, icon="warning",
     ):
         return
-    delete_editable_copy(self.store, self.key, copy_id)
+    if history:
+        from reqdoc_library import delete_history_document
+        delete_history_document(self.store, self.key, copy_id)
+    else:
+        delete_editable_copy(self.store, self.key, copy_id)
     self._working_copy_id = None
     self._working_copy_name = ""
     self._working_dirty = False
     self.load_working_document()
-    self.status.set(f"已删除副本「{name}」。")
+    self.refresh_tree()
+    self.status.set(f"已删除文档「{name}」。")
 
 
 def autosave(self):
@@ -1837,43 +1866,14 @@ def preview_working_document(self):
 def convert_working_document(self):
     self.require_doc()
     self.save_working_document(silent=True)
-    content = self.working_text.get("1.0", "end-1c")
+    if self._working_synced_block:
+        content = self.working_text.get("1.0", TASK_START_MARK) + self.working_text.get(TASK_END_MARK, "end-1c")
+    else:
+        content = self.working_text.get("1.0", "end-1c")
     if not content.strip():
         raise ValueError("工作文档为空，请先输入或导入内容。")
-    rows = document_to_task_items(content)
-    rows = [row for row in rows if (row.get("title") or "").strip() or (row.get("content") or "").strip()]
-    if not rows:
-        raise ValueError("没有识别到可转换的任务内容。")
-    if len(rows) > 500:
-        raise ValueError("一次最多转换 500 条任务，请先缩小内容范围。")
-    copy_id = self._working_copy_id
-    pending = list(enumerate(rows))
-    if copy_id is not None:
-        with self.store.conn() as conn:
-            link_existing_copy_tasks(conn, self.key, copy_id, rows)
-            matched = match_import_task_links(import_task_links(conn, self.key, copy_id), rows)
-        pending = [(position, row) for position, row in pending if position not in matched]
-        if not pending:
-            self.status.set("此副本中的任务已关联，保存副本时会同步修改。")
-            return
-    label = "导入副本" if copy_id is not None else "工作文档"
-    detail = "保存此副本时会同步对应任务。" if copy_id is not None else "重复转换会产生重复任务。"
-    if not messagebox.askyesno(
-        "转换为任务",
-        f"将从当前{label}生成 {len(pending)} 条任务。\n{detail}\n\n是否继续？",
-        parent=self,
-    ):
-        return
-    if copy_id is None:
-        self.s.commit_task_rows(self.key, rows)
-    else:
-        with self.s.connect() as conn:
-            add_import_tasks(self.s, conn, self.key, copy_id, pending)
-    self.store.snapshot(self.key)
-    self.refresh_tasks()
-    self.refresh_progress()
-    self.refresh_home()
-    self.status.set(f"已从{label}生成 {len(pending)} 条任务。")
+    from reqdoc_task_conversion import open_conversion_dialog
+    return open_conversion_dialog(self, content)
 
 
 def import_dialog(self):
@@ -2082,7 +2082,11 @@ def build_settings_page(self):
     box = ttk.LabelFrame(page, text="文件库保存路径", padding=12)
     box.pack(fill="x")
     ttk.Label(box, text=str(self.store.settings.library_root), wraplength=600).pack(anchor="w", pady=(0, 8))
-    ttk.Button(box, text="更改路径", command=lambda: self.guard(lambda: change_library_folder(self))).pack(anchor="w")
+    if self.store.settings.portable:
+        ttk.Label(box, text="资料库随软件文件夹一起移动。", foreground="#64748B").pack(anchor="w")
+        ttk.Button(box, text="打开资料库文件夹", command=lambda: self.open_path(self.store.settings.library_root)).pack(anchor="w")
+    else:
+        ttk.Button(box, text="更改路径", command=lambda: self.guard(lambda: change_library_folder(self))).pack(anchor="w")
 
     update_box = ttk.LabelFrame(page, text="软件更新 · GitHub", padding=12)
     update_box.pack(fill="x", pady=(10, 0))
@@ -2153,6 +2157,8 @@ def install(StudioClass, StoreClass):
     def store_init(self, settings):
         original_store_init(self, settings)
         ensure_working_schema(self)
+        from reqdoc_library import recover_history_deletions
+        recover_history_deletions(self)
 
     StoreClass.__init__ = store_init
 
@@ -2233,3 +2239,5 @@ def install(StudioClass, StoreClass):
     }
     for name, method in replacements.items():
         setattr(StudioClass, name, method)
+    from reqdoc_library import install_library
+    install_library(StudioClass)

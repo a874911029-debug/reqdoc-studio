@@ -463,6 +463,24 @@ class Store:
         self.snapshot(key)
         return warnings
 
+    def clone_library_data(self, destination):
+        """Copy a consistent database and all document assets to an empty directory."""
+        destination = Path(destination)
+        if not destination.is_dir() or any(destination.iterdir()):
+            raise ValueError('复制目标必须是空文件夹。')
+        home = destination / 'home'
+        home.mkdir()
+        with self.conn() as source, sqlite_connection(home/'reqdoc.db') as copied:
+            source.backup(copied)
+            if copied.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                raise ValueError('复制的数据库未通过完整性检查。')
+        for item in self.settings.home.iterdir():
+            if item.name in ('reqdoc.db','reqdoc.db-wal','reqdoc.db-shm','studio.lock'):
+                continue
+            if item.is_dir():shutil.copytree(item,home/item.name)
+            elif item.is_file():shutil.copy2(item,home/item.name)
+        shutil.copytree(self.settings.docs_dir,destination/'docs')
+
     def relocate_library(self,destination):
         """Copy the active data to an empty library and switch the startup path."""
         config = self.settings.library_config
@@ -478,13 +496,7 @@ class Store:
             raise ValueError('请选择应用配置目录之外的文件夹。')
         with tempfile.TemporaryDirectory(prefix='.reqdoc-move-',dir=target,ignore_cleanup_errors=True) as staging:
             stage = Path(staging)
-            home = stage / 'home'
-            home.mkdir()
-            with self.conn() as source,sqlite_connection(home/'reqdoc.db') as copied:
-                source.backup(copied)
-                if copied.execute('PRAGMA quick_check').fetchone() != ('ok',):
-                    raise ValueError('复制的数据库未通过完整性检查。')
-            shutil.copytree(self.settings.docs_dir,stage/'docs')
+            self.clone_library_data(stage)
             moved = []
             try:
                 for name in ('home','docs'):
@@ -3677,7 +3689,14 @@ def main():
                 except OSError:
                     logging.exception('Fatal error logging unavailable')
                 stack.enter_context(single_instance(settings.home))
-                app = CompactStudio(Store(settings))
+                store = Store(settings)
+                if settings.portable_target is not None:
+                    from reqdoc_library import migrate_portable_library
+                    settings = migrate_portable_library(store, settings.portable_target)
+                    stack.enter_context(single_instance(settings.home))
+                    logging.basicConfig(filename=str(settings.home/'studio.log'),encoding='utf-8',level=logging.INFO,force=True)
+                    store = Store(settings)
+                app = CompactStudio(store)
                 app.mainloop()
             if not getattr(app,'_library_changed',False):
                 return
