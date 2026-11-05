@@ -2294,7 +2294,7 @@ def import_paths(self, paths):
             messagebox.showwarning("导入提示", "\n".join(all_warnings[:30]), parent=self)
 
     ttk.Button(footer, text="取消", command=win.destroy).pack(side="right", padx=(6, 0))
-    ttk.Button(footer, text="确认导入", command=lambda: self.guard(commit)).pack(side="right")
+    ttk.Button(footer, text="确认导入", style="Accent.TButton", command=lambda: self.guard(commit)).pack(side="right")
     return win
 
 
