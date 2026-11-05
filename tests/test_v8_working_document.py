@@ -58,6 +58,8 @@ class WorkingDocumentTests(unittest.TestCase):
         self.assertIn("检查 GitHub 更新", source)
         self.assertIn("self.check_github_update", source)
         self.assertIn("self.update_button", source)
+        self.assertIn("恢复整理规则", source)
+        self.assertIn("restore_organization_rules", source)
 
     def test_working_copy_is_separate_from_archived_source(self):
         write_working_document(self.store, "doc-1", "editable copy", "manual")
