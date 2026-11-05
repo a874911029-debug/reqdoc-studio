@@ -411,8 +411,10 @@ def resolve_sync_conflict(self, conflict_id, choice):
             raise ValueError("任务来源关联已不存在，不能自动解决该冲突。")
         if choice == "source":
             updated = conn.execute(
-                f"UPDATE reqdoc_requirements SET {field}=?,updated_at=? WHERE project=? AND id=?",
-                (source_value, _now(), doc, task_id),
+                f"""UPDATE reqdoc_requirements SET {field}=?,updated_at=?
+                    WHERE project=? AND id=?
+                      AND NOT EXISTS(SELECT 1 FROM studio_trash WHERE id=?)""",
+                (source_value, _now(), doc, task_id, task_id),
             )
             if not updated.rowcount:
                 raise ValueError("关联任务已不存在，不能采用来源内容。")
@@ -1385,6 +1387,7 @@ def load_working_document(self):
         self._working_copy_id = None
         set_working_text(self, "")
         refresh_working_views(self)
+        refresh_sync_conflict_button(self)
         return
     if self._working_copy_id is not None:
         self._working_copy_name, content = read_import_copy(self.store, self.key, self._working_copy_id)
@@ -1461,6 +1464,7 @@ def save_working_document(self, silent=False):
         except tk.TclError:
             pass
         return False
+    previous_save_error = getattr(self, "_working_save_error", None)
     self._working_dirty = False
     self._working_save_error = None
     self._working_saved_key = self.key
@@ -1471,6 +1475,8 @@ def save_working_document(self, silent=False):
     refresh_sync_conflict_button(self)
     if not silent:
         self.status.set("导入副本已保存。" if self._working_copy_id is not None else "工作文档已保存。")
+    elif previous_save_error:
+        self.status.set("自动保存已恢复，当前编辑内容已保存。")
     return True
 
 
@@ -1517,10 +1523,15 @@ def autosave(self):
             self.persist_notes()
     except Exception as error:
         logging.exception("Working document autosave failed")
+        self._autosave_error = str(error)
         if getattr(self, "_working_dirty", False) or getattr(self, "notes_dirty", False):
             self.status.set(
                 f"自动保存失败：{error}。当前编辑仍保留在窗口中，程序会稍后重试；请勿在保存成功前关闭软件。"
             )
+    else:
+        if getattr(self, "_autosave_error", None):
+            self._autosave_error = None
+            self.status.set("自动保存已恢复。")
     try:
         self._autosave_after_id = self.after(2000, self.autosave)
     except tk.TclError:
@@ -2398,7 +2409,10 @@ def restore_organization_rules(self):
     data = json.loads(payload.decode("utf-8"))
     options = OrganizeOptions(**data)
     options.validate()
-    # Keep a full pre-restore recovery point before changing the active rules.
+    # Save current edits and keep a full pre-restore recovery point before changing the active rules.
+    self.keep_draft()
+    if hasattr(self, "persist_notes"):
+        self.persist_notes()
     safety_backup = self.store.backup()
     from reqdoc_studio import write_atomic
     target = Path(self.store.settings.home) / "organize-rules.json"
