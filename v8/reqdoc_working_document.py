@@ -405,6 +405,13 @@ def resolve_sync_conflict(self, conflict_id, choice):
             raise ValueError("冲突不属于当前文档，请重新打开对应文档。")
         if field not in TASK_FIELDS:
             raise ValueError("冲突字段无效，已拒绝修改。")
+        active_task = conn.execute("""
+            SELECT 1 FROM reqdoc_requirements
+            WHERE project=? AND id=?
+              AND NOT EXISTS(SELECT 1 FROM studio_trash WHERE id=?)
+        """, (doc, task_id, task_id)).fetchone()
+        if active_task is None:
+            raise ValueError("关联任务已删除或位于回收站，请先恢复任务再处理冲突。")
         link = conn.execute("""
             SELECT position,source_item FROM studio_import_task_links
             WHERE doc=? AND copy_id=? AND task_id=?
