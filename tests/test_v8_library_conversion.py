@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import time
 import tkinter as tk
+import zipfile
 from tkinter import ttk
 import unittest
 from unittest.mock import patch
@@ -14,7 +15,10 @@ from reqdoc.config import Settings
 from reqdoc_library import delete_history_document, migrate_portable_library, recover_history_deletions, delete_library_item
 from reqdoc_organize import organize_materials
 from reqdoc_task_conversion import conversion_items, strip_task_block
-from reqdoc_working_document import write_import_copy
+from reqdoc_working_document import (
+    refresh_sync_conflict_button, resolve_sync_conflict, save_import_task_link,
+    sync_import_tasks, write_import_copy,
+)
 from test_v8_feedback import WorkingStore, WorkingStudio, widgets
 
 
@@ -190,3 +194,86 @@ class LibraryConversionTests(unittest.TestCase):
         (folder / "manifest.json.temporary.tmp").write_text("partial", encoding="utf-8")
         recover_history_deletions(self.store)
         self.assertFalse(folder.exists())
+
+
+    def test_backup_contains_organization_rules_and_restores_them(self):
+        rules = {"rules_text": "灯光 = 照明"}
+        rule_path = self.settings.home / "organize-rules.json"
+        rule_path.write_text(json.dumps(rules, ensure_ascii=False), encoding="utf-8")
+        archive = self.store.backup()
+        with zipfile.ZipFile(archive) as package:
+            self.assertIn("reqdoc-data/home/organize-rules.json", package.namelist())
+            self.assertEqual(
+                json.loads(package.read("reqdoc-data/home/organize-rules.json").decode("utf-8")),
+                rules,
+            )
+        restored = self.store.restore_copy(archive, self.root / "restored")
+        self.assertEqual(
+            json.loads((restored / "reqdoc-data/home/organize-rules.json").read_text("utf-8")),
+            rules,
+        )
+
+    def test_failed_working_document_save_keeps_edits_and_shows_error(self):
+        app = self.app()
+        text = "这段内容必须留在编辑窗口中"
+        app.working_text.insert("1.0", text)
+        with patch("reqdoc_working_document.write_working_document", side_effect=OSError("磁盘写入失败")):
+            with patch("reqdoc_working_document.messagebox.showerror") as showerror:
+                self.assertFalse(app.save_working_document())
+        self.assertTrue(app._working_dirty)
+        self.assertIn(text, app.working_text.get("1.0", "end-1c"))
+        self.assertIn("保存失败", app.status.get())
+        self.assertIn("仍保留", app.status.get())
+        showerror.assert_called_once()
+
+    def test_source_and_task_changes_create_resolvable_conflict(self):
+        app = self.app()
+        source_content = "## 灯光\\n\\n照明使用暖色调。"
+        items = conversion_items(source_content)
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        task = self.store.save_task(
+            self.doc.key, item["title"], item["section"], item["content"]
+        )
+        copy_id = "history-source-conflict"
+        with self.store.conn() as conn:
+            write_import_copy(conn, self.doc.key, copy_id, "灯光资料.md", source_content)
+            save_import_task_link(conn, self.doc.key, copy_id, task.id, 0, item)
+
+        task_edit = item["content"] + "\\n任务侧补充了限制条件。"
+        self.store.save_task(
+            self.doc.key, item["title"], item["section"], task_edit, rid=task.id
+        )
+        source_updated = source_content.replace("暖色调", "冷色调")
+        with self.store.conn() as conn:
+            write_import_copy(conn, self.doc.key, copy_id, "灯光资料.md", source_updated)
+            changed = sync_import_tasks(conn, self.doc.key, copy_id, source_updated)
+        self.assertFalse(changed)
+        self.assertEqual(self.store.service.get_requirement(task.id).content, task_edit)
+        with self.store.conn() as conn:
+            conflict = conn.execute("""
+                SELECT id,field,previous_value,source_value,task_value,status
+                FROM studio_sync_conflicts
+                WHERE doc=? AND copy_id=? AND task_id=? AND status='unresolved'
+            """, (self.doc.key, copy_id, task.id)).fetchone()
+        self.assertIsNotNone(conflict)
+        self.assertEqual(conflict[1], "content")
+        self.assertEqual(conflict[4], task_edit)
+        self.assertIn("冷色调", conflict[3])
+        refresh_sync_conflict_button(app)
+        self.assertEqual(app.sync_conflict_button.cget("text"), "同步冲突 (1)")
+
+        resolve_sync_conflict(app, conflict[0], "task")
+        self.assertEqual(self.store.service.get_requirement(task.id).content, task_edit)
+        with self.store.conn() as conn:
+            status = conn.execute(
+                "SELECT status,resolution FROM studio_sync_conflicts WHERE id=?",
+                (conflict[0],),
+            ).fetchone()
+            link = json.loads(conn.execute(
+                "SELECT source_item FROM studio_import_task_links WHERE doc=? AND copy_id=? AND task_id=?",
+                (self.doc.key, copy_id, task.id),
+            ).fetchone()[0])
+        self.assertEqual(status, ("resolved", "task"))
+        self.assertIn("冷色调", link["content"])
+        self.assertEqual(app.sync_conflict_button.cget("text"), "同步冲突 (0)")
