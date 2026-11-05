@@ -188,6 +188,7 @@ def delete_editable_copy(store, key, copy_id, *, connection=None):
         conn.execute("DELETE FROM studio_import_copies WHERE doc=? AND id=?", (key, copy_id))
         conn.execute("DELETE FROM studio_import_task_links WHERE doc=? AND copy_id=?", (key, copy_id))
         conn.execute("DELETE FROM studio_conversion_modes WHERE doc=? AND copy_id=?", (key, copy_id))
+        conn.execute("DELETE FROM studio_sync_conflicts WHERE doc=? AND copy_id=?", (key, copy_id))
     return True
 
 
@@ -223,6 +224,7 @@ def delete_working_documents(store, keys):
         conn.executemany("DELETE FROM studio_import_task_links WHERE doc=?", keys)
         conn.executemany("DELETE FROM studio_deleted_copies WHERE doc=?", keys)
         conn.executemany("DELETE FROM studio_conversion_modes WHERE doc=?", keys)
+        conn.executemany("DELETE FROM studio_sync_conflicts WHERE doc=?", keys)
 
 
 def import_item_values(item):
@@ -1544,6 +1546,7 @@ def load_doc(self, key):
         self.refresh_task_selectors(key)
         refresh_working_views(self)
         self.refresh_tasks()
+        refresh_sync_conflict_button(self)
         return
     self.key = key
     self._working_copy_id = None
