@@ -83,6 +83,26 @@ def ensure_working_schema(store):
                 PRIMARY KEY(doc,copy_id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS studio_sync_conflicts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc TEXT NOT NULL,
+                copy_id TEXT NOT NULL,
+                task_id INTEGER NOT NULL,
+                field TEXT NOT NULL,
+                previous_value TEXT NOT NULL,
+                source_value TEXT NOT NULL,
+                task_value TEXT NOT NULL,
+                detected_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unresolved',
+                resolution TEXT NOT NULL DEFAULT '',
+                resolved_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_studio_sync_conflicts_doc_status
+            ON studio_sync_conflicts(doc,status,detected_at)
+        """)
 
 
 def read_working_document(store, key, fallback=""):
@@ -274,7 +294,37 @@ def match_import_task_links(links, items):
     return matches
 
 
+def _record_sync_conflict(conn, key, copy_id, task_id, field, previous, source, task):
+    row = conn.execute("""
+        SELECT id FROM studio_sync_conflicts
+        WHERE doc=? AND copy_id=? AND task_id=? AND field=? AND status='unresolved'
+        ORDER BY id DESC LIMIT 1
+    """, (key, copy_id, task_id, field)).fetchone()
+    values = (str(previous), str(source), str(task), _now())
+    if row:
+        conn.execute("""
+            UPDATE studio_sync_conflicts
+            SET previous_value=?,source_value=?,task_value=?,detected_at=?
+            WHERE id=?
+        """, (*values, row[0]))
+    else:
+        conn.execute("""
+            INSERT INTO studio_sync_conflicts(
+                doc,copy_id,task_id,field,previous_value,source_value,task_value,detected_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+        """, (key, copy_id, task_id, field, *values))
+
+
+def _resolve_converged_sync_conflict(conn, key, copy_id, task_id, field):
+    conn.execute("""
+        UPDATE studio_sync_conflicts
+        SET status='resolved',resolution='converged',resolved_at=?
+        WHERE doc=? AND copy_id=? AND task_id=? AND field=? AND status='unresolved'
+    """, (_now(), key, copy_id, task_id, field))
+
+
 def sync_import_tasks(conn, key, copy_id, content):
+    """Sync source edits without silently overwriting independent task edits."""
     links = import_task_links(conn, key, copy_id)
     if not links:
         return False
@@ -283,16 +333,194 @@ def sync_import_tasks(conn, key, copy_id, content):
     changed = False
     for position, (task_id, previous) in match_import_task_links(links, items).items():
         current = import_item_values(items[position])
-        fields = [current[field] if current[field] != previous[field] else None for field in TASK_FIELDS]
-        if any(value is not None for value in fields):
+        task_row = conn.execute("""
+            SELECT title,section,content FROM reqdoc_requirements
+            WHERE project=? AND id=?
+              AND NOT EXISTS(SELECT 1 FROM studio_trash WHERE id=?)
+        """, (key, task_id, task_id)).fetchone()
+        if task_row is None:
+            continue
+        task_values = dict(zip(TASK_FIELDS, task_row))
+        baseline = dict(previous)
+        updates = {}
+        for field in TASK_FIELDS:
+            source_changed = current[field] != previous[field]
+            task_changed = task_values[field] != previous[field]
+            if source_changed and task_changed and current[field] != task_values[field]:
+                _record_sync_conflict(
+                    conn, key, copy_id, task_id, field,
+                    previous[field], current[field], task_values[field],
+                )
+                # Keep the previous common ancestor until the user resolves the conflict.
+                continue
+            if source_changed and current[field] != task_values[field]:
+                updates[field] = current[field]
+            baseline[field] = current[field]
+            if current[field] == task_values[field]:
+                _resolve_converged_sync_conflict(conn, key, copy_id, task_id, field)
+        if updates:
             updated = conn.execute("""
                 UPDATE reqdoc_requirements SET title=coalesce(?,title), section=coalesce(?,section),
                     content=coalesce(?,content), updated_at=?
                 WHERE project=? AND id=? AND NOT EXISTS(SELECT 1 FROM studio_trash WHERE id=?)
-            """, (*fields, _now(), key, task_id, task_id))
+            """, (
+                updates.get("title"), updates.get("section"), updates.get("content"),
+                _now(), key, task_id, task_id,
+            ))
             changed |= bool(updated.rowcount)
-        save_import_task_link(conn, key, copy_id, task_id, position, current)
+        if baseline != previous:
+            save_import_task_link(conn, key, copy_id, task_id, position, baseline)
     return changed
+
+
+def refresh_sync_conflict_button(self):
+    button = getattr(self, "sync_conflict_button", None)
+    if button is None:
+        return
+    count = 0
+    if self.key:
+        with self.store.conn() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM studio_sync_conflicts WHERE doc=? AND status='unresolved'",
+                (self.key,),
+            ).fetchone()[0]
+    button.configure(text=f"同步冲突 ({count})")
+    button.state(["!disabled"] if count else ["disabled"])
+
+
+def resolve_sync_conflict(self, conflict_id, choice):
+    if choice not in ("source", "task"):
+        raise ValueError("未知的冲突处理方式。")
+    with self.store.conn() as conn:
+        row = conn.execute("""
+            SELECT doc,copy_id,task_id,field,source_value,status
+            FROM studio_sync_conflicts WHERE id=?
+        """, (int(conflict_id),)).fetchone()
+        if row is None or row[5] != "unresolved":
+            raise ValueError("这条同步冲突已处理或不存在。")
+        doc, copy_id, task_id, field, source_value, _ = row
+        if doc != self.key:
+            raise ValueError("冲突不属于当前文档，请重新打开对应文档。")
+        if field not in TASK_FIELDS:
+            raise ValueError("冲突字段无效，已拒绝修改。")
+        link = conn.execute("""
+            SELECT position,source_item FROM studio_import_task_links
+            WHERE doc=? AND copy_id=? AND task_id=?
+        """, (doc, copy_id, task_id)).fetchone()
+        if link is None:
+            raise ValueError("任务来源关联已不存在，不能自动解决该冲突。")
+        if choice == "source":
+            updated = conn.execute(
+                f"UPDATE reqdoc_requirements SET {field}=?,updated_at=? WHERE project=? AND id=?",
+                (source_value, _now(), doc, task_id),
+            )
+            if not updated.rowcount:
+                raise ValueError("关联任务已不存在，不能采用来源内容。")
+        baseline = json.loads(link[1])
+        baseline[field] = source_value
+        save_import_task_link(conn, doc, copy_id, task_id, link[0], baseline)
+        conn.execute("""
+            UPDATE studio_sync_conflicts
+            SET status='resolved',resolution=?,resolved_at=?
+            WHERE id=? AND status='unresolved'
+        """, (choice, _now(), int(conflict_id)))
+    self.refresh_tasks()
+    self.refresh_progress()
+    if self.key:
+        sync_working_tasks(self, self.store.tasks(self.key), force=True)
+    refresh_sync_conflict_button(self)
+    self.status.set("已采用来源内容解决冲突。" if choice == "source" else "已保留任务内容并记录当前来源版本。")
+
+
+def show_sync_conflicts(self):
+    if not self.key:
+        raise ValueError("请先选择一份文档。")
+    from reqdoc_task_conversion import MAIN_COPY_ID
+    with self.store.conn() as conn:
+        rows = conn.execute("""
+            SELECT c.id,c.copy_id,c.task_id,c.field,c.previous_value,c.source_value,
+                   c.task_value,c.detected_at,
+                   CASE WHEN c.copy_id=? THEN '工作文档'
+                        ELSE COALESCE(i.name,s.name,'导入资料') END
+            FROM studio_sync_conflicts c
+            LEFT JOIN studio_import_copies i ON i.doc=c.doc AND i.id=c.copy_id
+            LEFT JOIN studio_sources s ON s.doc=c.doc AND s.id=c.copy_id
+            WHERE c.doc=? AND c.status='unresolved'
+            ORDER BY c.detected_at DESC,c.id DESC
+        """, (MAIN_COPY_ID, self.key)).fetchall()
+    if not rows:
+        messagebox.showinfo("同步冲突", "当前文档没有待处理的同步冲突。", parent=self)
+        refresh_sync_conflict_button(self)
+        return
+    win = tk.Toplevel(self)
+    win.title("来源与任务同步冲突")
+    self.sized_dialog(win, 980, 650)
+    win.transient(self)
+    panel = ttk.Frame(win, padding=12)
+    panel.pack(fill="both", expand=True)
+    ttk.Label(
+        panel,
+        text="来源和任务都修改了同一字段。系统不会静默覆盖；请选择采用来源内容，或保留任务内容。",
+        wraplength=900,
+    ).pack(anchor="w", pady=(0, 8))
+    tree = ttk.Treeview(panel, columns=("task", "source", "field", "time"), show="headings", height=8)
+    for column, title, width in (
+        ("task", "任务 ID", 90), ("source", "来源文档", 300),
+        ("field", "冲突字段", 120), ("time", "发现时间", 180),
+    ):
+        tree.heading(column, text=title)
+        tree.column(column, width=width, minwidth=70)
+    tree.pack(fill="x", expand=False)
+    by_id = {str(row[0]): row for row in rows}
+    for row in rows:
+        field_label = {"title": "标题", "section": "主题/章节", "content": "正文"}.get(row[3], row[3])
+        tree.insert("", "end", iid=str(row[0]), values=(row[2], row[8], field_label, row[7]))
+    detail = tk.Text(panel, height=13, wrap="word", padx=10, pady=8)
+    detail.pack(fill="both", expand=True, pady=(8, 8))
+    detail.configure(state="disabled")
+
+    def render_detail(event=None):
+        selected = tree.selection()
+        if not selected:
+            return
+        row = by_id[selected[0]]
+        field_label = {"title": "标题", "section": "主题/章节", "content": "正文"}.get(row[3], row[3])
+        body = (
+            f"任务 ID：{row[2]}\n来源：{row[8]}\n字段：{field_label}\n发现时间：{row[7]}\n\n"
+            f"共同基线：\n{row[4]}\n\n来源新内容：\n{row[5]}\n\n任务新内容：\n{row[6]}"
+        )
+        detail.configure(state="normal")
+        detail.delete("1.0", "end")
+        detail.insert("1.0", body)
+        detail.configure(state="disabled")
+
+    tree.bind("<<TreeviewSelect>>", render_detail)
+    if rows:
+        tree.selection_set(str(rows[0][0]))
+        render_detail()
+
+    actions = ttk.Frame(panel)
+    actions.pack(fill="x")
+
+    def apply(choice):
+        selected = tree.selection()
+        if not selected:
+            raise ValueError("请先选择一条冲突。")
+        resolve_sync_conflict(self, int(selected[0]), choice)
+        win.destroy()
+        refresh_sync_conflict_button(self)
+        with self.store.conn() as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM studio_sync_conflicts WHERE doc=? AND status='unresolved'",
+                (self.key,),
+            ).fetchone()[0]
+        if remaining:
+            show_sync_conflicts(self)
+
+    ttk.Button(actions, text="采用来源内容", command=lambda: self.guard(lambda: apply("source"))).pack(side="left")
+    ttk.Button(actions, text="保留任务内容", command=lambda: self.guard(lambda: apply("task"))).pack(side="left", padx=(8, 0))
+    ttk.Button(actions, text="稍后处理", command=win.destroy).pack(side="right")
+    return win
 
 
 def add_import_tasks(service, conn, key, copy_id, items):
@@ -618,6 +846,11 @@ def build_tasks_page(self):
         ttk.Button(workbar, text=label, command=lambda fn=command: self.guard(fn)).pack(
             side="left", padx=(0, 5), pady=2
         )
+    self.sync_conflict_button = ttk.Button(
+        workbar, text="同步冲突 (0)", command=lambda: self.guard(lambda: show_sync_conflicts(self))
+    )
+    self.sync_conflict_button.pack(side="left", padx=(0, 5), pady=2)
+    self.sync_conflict_button.state(["disabled"])
     tools = ttk.Frame(left)
     tools.pack(fill="x", pady=(0, 5))
     ttk.Button(tools, text="粘贴图片", command=lambda: self.guard(self.paste_working_image)).pack(side="left", padx=(0, 5))
@@ -1158,6 +1391,7 @@ def load_working_document(self):
         set_working_text(self, content)
         self._working_saved_key = self.key
         refresh_working_views(self)
+        refresh_sync_conflict_button(self)
         hint = "整理结果，可直接编辑、保存和导出。" if self._working_copy_id.startswith(ORGANIZED_PREFIX) else "导入副本独立编辑，可从此副本转成任务。"
         self.working_hint.configure(text=hint)
         self.working_text.focus_set()
@@ -1185,6 +1419,7 @@ def load_working_document(self):
     refresh_working_views(self)
     sync_working_tasks(self, tasks)
     self._working_dirty |= legacy_summary
+    refresh_sync_conflict_button(self)
     self.working_hint.configure(text="改状态或删除编号行可同步任务，右键可新增。")
     self.working_text.focus_set()
 
@@ -1194,27 +1429,46 @@ def save_working_document(self, silent=False):
         if silent:
             return False
         raise ValueError("请先选择一份文档。")
-    flush_working_task_edits(self)
-    if self._working_synced_block and self.working_text.compare(TASK_START_MARK, "<=", TASK_END_MARK):
-        content = self.working_text.get("1.0", TASK_START_MARK) + self.working_text.get(TASK_END_MARK, "end-1c")
-    else:
-        content = self.working_text.get("1.0", "end-1c")
-    tasks_changed = False
-    if self._working_copy_id is None:
-        from reqdoc_task_conversion import MAIN_COPY_ID
-        with self.s.connect() as conn:
-            write_working_document(self.store, self.key, content, self._working_mode, connection=conn)
-            tasks_changed = sync_import_tasks(conn, self.key, MAIN_COPY_ID, content)
-    else:
-        with self.s.connect() as conn:
-            write_import_copy(conn, self.key, self._working_copy_id, self._working_copy_name, content)
-            tasks_changed = sync_import_tasks(conn, self.key, self._working_copy_id, content)
+    try:
+        flush_working_task_edits(self)
+        if self._working_synced_block and self.working_text.compare(TASK_START_MARK, "<=", TASK_END_MARK):
+            content = self.working_text.get("1.0", TASK_START_MARK) + self.working_text.get(TASK_END_MARK, "end-1c")
+        else:
+            content = self.working_text.get("1.0", "end-1c")
+        tasks_changed = False
+        if self._working_copy_id is None:
+            from reqdoc_task_conversion import MAIN_COPY_ID
+            with self.s.connect() as conn:
+                write_working_document(self.store, self.key, content, self._working_mode, connection=conn)
+                tasks_changed = sync_import_tasks(conn, self.key, MAIN_COPY_ID, content)
+        else:
+            with self.s.connect() as conn:
+                write_import_copy(conn, self.key, self._working_copy_id, self._working_copy_name, content)
+                tasks_changed = sync_import_tasks(conn, self.key, self._working_copy_id, content)
+    except Exception as error:
+        self._working_dirty = True
+        self._working_save_error = str(error)
+        message = (
+            f"保存失败：{error}\n\n"
+            "当前编辑内容仍保留在窗口中。请先不要关闭或切换文档，修复问题后再次点击“保存文档”。"
+        )
+        self.status.set(message.replace("\n", " "))
+        logging.exception("Working document save failed")
+        if silent:
+            raise RuntimeError(message) from error
+        try:
+            messagebox.showerror("保存失败", message, parent=self)
+        except tk.TclError:
+            pass
+        return False
     self._working_dirty = False
+    self._working_save_error = None
     self._working_saved_key = self.key
     if tasks_changed:
         self.store.snapshot(self.key)
         self.refresh_tasks()
         self.refresh_progress()
+    refresh_sync_conflict_button(self)
     if not silent:
         self.status.set("导入副本已保存。" if self._working_copy_id is not None else "工作文档已保存。")
     return True
@@ -1261,8 +1515,12 @@ def autosave(self):
         self.keep_draft()
         if hasattr(self, "persist_notes"):
             self.persist_notes()
-    except Exception:
+    except Exception as error:
         logging.exception("Working document autosave failed")
+        if getattr(self, "_working_dirty", False) or getattr(self, "notes_dirty", False):
+            self.status.set(
+                f"自动保存失败：{error}。当前编辑仍保留在窗口中，程序会稍后重试；请勿在保存成功前关闭软件。"
+            )
     try:
         self._autosave_after_id = self.after(2000, self.autosave)
     except tk.TclError:
@@ -2078,7 +2336,7 @@ def build_settings_page(self):
     from version import VERSION
 
     page = self.pages["settings"]
-    self.page_title(page, "设置与数据", "管理文件库保存位置和软件更新。")
+    self.page_title(page, "设置与数据", "管理文件库、整理规则备份和软件更新。")
     box = ttk.LabelFrame(page, text="文件库保存路径", padding=12)
     box.pack(fill="x")
     ttk.Label(box, text=str(self.store.settings.library_root), wraplength=600).pack(anchor="w", pady=(0, 8))
@@ -2087,6 +2345,18 @@ def build_settings_page(self):
         ttk.Button(box, text="打开资料库文件夹", command=lambda: self.open_path(self.store.settings.library_root)).pack(anchor="w")
     else:
         ttk.Button(box, text="更改路径", command=lambda: self.guard(lambda: change_library_folder(self))).pack(anchor="w")
+
+    rules_box = ttk.LabelFrame(page, text="整理规则备份", padding=12)
+    rules_box.pack(fill="x", pady=(10, 0))
+    ttk.Label(
+        rules_box,
+        text="完整备份包含数据库、文档、图片和本地整理规则。可以从备份包单独恢复整理规则；恢复前会自动备份当前数据。",
+        foreground="#52647B", wraplength=900, justify="left",
+    ).pack(anchor="w", pady=(0, 8))
+    ttk.Button(
+        rules_box, text="从备份恢复整理规则",
+        command=lambda: self.guard(lambda: restore_organization_rules(self)),
+    ).pack(anchor="w")
 
     update_box = ttk.LabelFrame(page, text="软件更新 · GitHub", padding=12)
     update_box.pack(fill="x", pady=(10, 0))
@@ -2103,6 +2373,43 @@ def build_settings_page(self):
     self._update_in_progress = False
     self._update_poll_after_id = None
     ttk.Button(page, text="使用说明", command=lambda: self.guard(self.help)).pack(anchor="w", pady=(10, 0))
+
+
+
+
+def restore_organization_rules(self):
+    archive = filedialog.askopenfilename(
+        parent=self, title="选择包含整理规则的 ReqDoc 备份包",
+        filetypes=[("ReqDoc 备份 ZIP", "*.zip")],
+    )
+    if not archive:
+        return False
+    import zipfile
+    from reqdoc_organize import OrganizeOptions
+    member = "reqdoc-data/home/organize-rules.json"
+    with zipfile.ZipFile(archive) as package:
+        try:
+            info = package.getinfo(member)
+        except KeyError as error:
+            raise ValueError("该备份包没有整理规则。请使用包含整理规则的新版完整备份。") from error
+        if info.file_size > 1024 * 1024:
+            raise ValueError("整理规则文件超过 1 MB，已拒绝恢复。")
+        payload = package.read(member)
+    data = json.loads(payload.decode("utf-8"))
+    options = OrganizeOptions(**data)
+    options.validate()
+    # Keep a full pre-restore recovery point before changing the active rules.
+    safety_backup = self.store.backup()
+    from reqdoc_studio import write_atomic
+    target = Path(self.store.settings.home) / "organize-rules.json"
+    write_atomic(target, payload)
+    self.status.set(f"整理规则已恢复；恢复前完整备份：{safety_backup}")
+    messagebox.showinfo(
+        "整理规则已恢复",
+        f"已恢复整理规则。恢复前自动备份了当前数据库、文档和规则：\n{safety_backup}",
+        parent=self,
+    )
+    return True
 
 
 def change_library_folder(self):
