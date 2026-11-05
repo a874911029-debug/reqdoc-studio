@@ -4,6 +4,7 @@ No extra Python dependency. Best-effort only; File > Import remains available if
 Windows prevents drag/drop. No elevation is requested or supported.
 """
 from __future__ import annotations
+from collections import deque
 from pathlib import Path
 import sys
 
@@ -28,35 +29,49 @@ def select_drop_files(paths):
 
 
 class WindowsFileDrop:
-    """Register individual Tk window handles and restore subclassing on close."""
+    """Collect Explorer drops in Win32 and deliver them from the Tk event loop."""
     WM_DROPFILES=0x0233
+    WM_NCDESTROY=0x0082
+    SUBCLASS_ID=1
 
     def __init__(self,root,callback):
         self.root=root
         self.callback=callback
-        self._hooks=[]
+        self._handles=set()
+        self._pending=deque()
+        self._timer=None
+        self._closed=False
         if sys.platform!='win32':raise OSError('拖放支持仅适用于 Windows。')
         import ctypes
         from ctypes import wintypes
         self.ctypes=ctypes
-        self.wintypes=wintypes
         self.user32=ctypes.WinDLL('user32',use_last_error=True)
         self.shell32=ctypes.WinDLL('shell32',use_last_error=True)
-        is64=ctypes.sizeof(ctypes.c_void_p)==8
-        self.set_window_long=getattr(self.user32,'SetWindowLongPtrW' if is64 else 'SetWindowLongW')
-        self.set_window_long.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_ssize_t]
-        self.set_window_long.restype=ctypes.c_ssize_t
+        controls=ctypes.WinDLL('comctl32',use_last_error=True)
+        message_args=[wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
+        proc_type=ctypes.WINFUNCTYPE(ctypes.c_ssize_t,*message_args,ctypes.c_size_t,ctypes.c_size_t)
+        self._proc=proc_type(self._window_message)
+        self._set_subclass=controls.SetWindowSubclass
+        self._set_subclass.argtypes=[wintypes.HWND,proc_type,ctypes.c_size_t,ctypes.c_size_t]
+        self._set_subclass.restype=wintypes.BOOL
+        self._remove_subclass=controls.RemoveWindowSubclass
+        self._remove_subclass.argtypes=[wintypes.HWND,proc_type,ctypes.c_size_t]
+        self._remove_subclass.restype=wintypes.BOOL
+        self._forward=controls.DefSubclassProc
+        self._forward.argtypes=message_args
+        self._forward.restype=ctypes.c_ssize_t
         self.user32.GetParent.argtypes=[wintypes.HWND]
         self.user32.GetParent.restype=wintypes.HWND
-        self.user32.CallWindowProcW.argtypes=[ctypes.c_void_p,wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
-        self.user32.CallWindowProcW.restype=ctypes.c_ssize_t
         self.shell32.DragAcceptFiles.argtypes=[wintypes.HWND,wintypes.BOOL]
+        self.shell32.DragAcceptFiles.restype=None
         self.shell32.DragQueryFileW.argtypes=[wintypes.HANDLE,wintypes.UINT,wintypes.LPWSTR,wintypes.UINT]
         self.shell32.DragQueryFileW.restype=wintypes.UINT
         self.shell32.DragFinish.argtypes=[wintypes.HANDLE]
-        self.proc_type=ctypes.WINFUNCTYPE(ctypes.c_ssize_t,wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM)
+        self.shell32.DragFinish.restype=None
 
     def install_on(self,widget,include_parent=False):
+        if self._closed:
+            return 0
         widget.update_idletasks()
         hwnd=int(widget.winfo_id())
         hwnds=[hwnd]
@@ -65,48 +80,58 @@ class WindowsFileDrop:
             if parent:hwnds.append(int(parent))
         count=0
         for handle in dict.fromkeys(hwnds):
-            if any(x['hwnd']==handle for x in self._hooks):continue
-            if self._install_one(handle):count+=1
+            if handle not in self._handles and self._set_subclass(handle,self._proc,self.SUBCLASS_ID,0):
+                self._handles.add(handle)
+                self.shell32.DragAcceptFiles(handle,True)
+                count+=1
+        if self._handles and self._timer is None:
+            self._timer=self.root.after(80,self._poll)
         return count
 
-    def _install_one(self,handle):
-        ctypes=self.ctypes
-        previous=[0]
-        def callback(hwnd,msg,wparam,lparam):
-            if msg==self.WM_DROPFILES:
-                paths=[];errors=[]
-                try:
-                    total=int(self.shell32.DragQueryFileW(wparam,0xFFFFFFFF,None,0))
-                    if total>20:errors.append('一次最多拖入 20 个文件。')
-                    for i in range(min(total,20)):
-                        size=int(self.shell32.DragQueryFileW(wparam,i,None,0))
-                        buffer=ctypes.create_unicode_buffer(size+1)
-                        self.shell32.DragQueryFileW(wparam,i,buffer,size+1)
-                        paths.append(buffer.value)
-                except Exception as exc:
-                    errors.append('无法读取拖入文件：'+str(exc))
-                finally:
-                    self.shell32.DragFinish(wparam)
-                try:
-                    self.root.after_idle(lambda paths=tuple(paths),errors=tuple(errors):self.callback(paths,errors))
-                except Exception:pass
-                return 0
-            return self.user32.CallWindowProcW(previous[0],hwnd,msg,wparam,lparam)
-        proc=self.proc_type(callback)
-        ctypes.set_last_error(0)
-        old=self.set_window_long(handle,-4,ctypes.cast(proc,ctypes.c_void_p).value)
-        if not old:
-            # If OS rejects this handle, leave standard file picker functional.
-            return False
-        previous[0]=old
-        self.shell32.DragAcceptFiles(handle,True)
-        self._hooks.append({'hwnd':handle,'proc':proc,'old':old})
-        return True
+    def _window_message(self,hwnd,msg,wparam,lparam,_subclass_id,_data):
+        if msg==self.WM_NCDESTROY:
+            self._remove_subclass(hwnd,self._proc,self.SUBCLASS_ID)
+            self._handles.discard(hwnd)
+        if msg!=self.WM_DROPFILES:
+            return self._forward(hwnd,msg,wparam,lparam)
+
+        paths=[]
+        errors=[]
+        try:
+            total=self.shell32.DragQueryFileW(wparam,0xFFFFFFFF,None,0)
+            if total>20:
+                errors.append('一次最多拖入 20 个文件。')
+            else:
+                for index in range(total):
+                    size=self.shell32.DragQueryFileW(wparam,index,None,0)
+                    buffer=self.ctypes.create_unicode_buffer(size+1)
+                    if not self.shell32.DragQueryFileW(wparam,index,buffer,size+1):
+                        raise OSError('Windows 未返回完整路径。')
+                    paths.append(buffer.value)
+        except Exception as exc:
+            errors.append('无法读取拖入文件：'+str(exc))
+        finally:
+            self.shell32.DragFinish(wparam)
+        if not self._closed:
+            self._pending.append((tuple(paths),tuple(errors)))
+        return 0
+
+    def _poll(self):
+        self._timer=None
+        try:
+            if self._pending:
+                self.callback(*self._pending.popleft())
+        finally:
+            if not self._closed and self._timer is None:
+                self._timer=self.root.after(80,self._poll)
 
     def close(self):
-        for hook in reversed(self._hooks):
-            try:
-                self.shell32.DragAcceptFiles(hook['hwnd'],False)
-                self.set_window_long(hook['hwnd'],-4,hook['old'])
-            except Exception:pass
-        self._hooks.clear()
+        self._closed=True
+        for handle in tuple(self._handles):
+            self.shell32.DragAcceptFiles(handle,False)
+            if self._remove_subclass(handle,self._proc,self.SUBCLASS_ID):
+                self._handles.discard(handle)
+        if self._timer is not None:
+            self.root.after_cancel(self._timer)
+            self._timer=None
+        self._pending.clear()

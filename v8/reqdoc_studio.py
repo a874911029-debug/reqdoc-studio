@@ -2046,28 +2046,34 @@ class CompactStudio(CompactStudioV4):
         self._drop_after_id=self.after(240,self.install_file_drop) if sys.platform=='win32' else None
 
     def install_file_drop(self):
-        """Register Windows Explorer file dropping on the main UI and reading panels."""
+        """Register Explorer drops on the window and the document editor."""
         self._drop_after_id=None
         if sys.platform!='win32':return False
+        if self._file_drop:return True
+        bridge=None
         try:
             from reqdoc_win_drop import WindowsFileDrop
             bridge=WindowsFileDrop(self,self._accept_dropped_files)
-            total=0
-            # Avoid native subclassing of several short-lived Tk child windows.
-            # Limit experimental Win32 hooks to the stable root window.
-            total+=bridge.install_on(self,include_parent=True)
+            total=bridge.install_on(self,include_parent=True)
+            editor=getattr(self,'working_text',None)
+            if editor is not None:
+                total+=bridge.install_on(editor)
             if not total:raise RuntimeError('未能注册任何可拖入区域。')
             self._file_drop=bridge
             self.status.set('可将 docx、txt、md 文件拖入窗口，选择形成工作文档或任务。')
             return True
         except Exception as exc:
-            try:bridge.close()
-            except Exception:pass
+            if bridge is not None:
+                try:bridge.close()
+                except Exception:pass
             logging.warning('Explorer drag/drop unavailable: %s',exc)
             self.status.set('文件拖放暂不可用，可点击“导入文件”；详情请查看程序日志。')
             return False
 
     def _accept_dropped_files(self,paths,errors):
+        if self.grab_current() is not None:
+            self.status.set('请先关闭当前对话框，再拖入文件。')
+            return
         if errors:
             messagebox.showwarning('文件拖入', '\n'.join(errors),parent=self)
             return

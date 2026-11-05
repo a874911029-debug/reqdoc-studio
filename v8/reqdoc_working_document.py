@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import re
+import uuid
 from collections import defaultdict
 from contextlib import ExitStack, nullcontext
 from datetime import datetime
@@ -17,6 +18,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from reqdoc.gui.widgets import DOCUMENT_FONT, configure_document_styles, style_document_lines
+from reqdoc_organize import ORGANIZED_PREFIX, organize_materials
 
 
 TASK_BLOCK_START = "<!-- reqdoc:tasks -->"
@@ -582,6 +584,7 @@ def build_tasks_page(self):
     export_menu.add_command(label="预览导出内容", command=lambda: self.guard(self.preview_working_document))
     export.configure(menu=export_menu)
     export.pack(side="left")
+    ttk.Button(tools, text="一键整理", command=lambda: self.guard(lambda: organize_working_materials(self))).pack(side="left", padx=(5, 0))
     self.working_hint = ttk.Label(
         left, text="这里编辑软件生成的工作副本；原始文件只读归档，不在此处预览。",
         foreground="#64748B",
@@ -1053,8 +1056,12 @@ def refresh_working_views(self):
                 "SELECT id,name FROM studio_import_copies WHERE doc=? AND id=?",
                 (self.key, LEGACY_IMPORT_COPY),
             ).fetchall()
-        for copy_id, name in sources + preserved:
-            label = f"副本 · {name}"
+            organized = conn.execute(
+                "SELECT id,name FROM studio_import_copies WHERE doc=? AND id GLOB ? ORDER BY name DESC,id",
+                (self.key, ORGANIZED_PREFIX + "*"),
+            ).fetchall()
+        for copy_id, name in sources + preserved + organized:
+            label = f"整理 · {name}" if copy_id.startswith(ORGANIZED_PREFIX) else f"副本 · {name}"
             suffix = 2
             while label in self._working_view_ids:
                 label = f"副本 · {name}（{suffix}）"
@@ -1093,7 +1100,8 @@ def load_working_document(self):
         set_working_text(self, content)
         self._working_saved_key = self.key
         refresh_working_views(self)
-        self.working_hint.configure(text="导入副本独立编辑，可从此副本转成任务。")
+        hint = "整理结果，可直接编辑、保存和导出。" if self._working_copy_id.startswith(ORGANIZED_PREFIX) else "导入副本独立编辑，可从此副本转成任务。"
+        self.working_hint.configure(text=hint)
         self.working_text.focus_set()
         return
     self._working_copy_name = ""
@@ -1705,6 +1713,92 @@ def export_working_document(self, kind):
     self.require_doc()
     name = Path(self._working_copy_name).stem if self._working_copy_id is not None else None
     return self.export(kind, content=working_export_content(self), name=name)
+
+
+def organize_working_materials(self):
+    self.require_doc()
+    key = self.key
+    with self.store.conn() as conn:
+        main_row = conn.execute("SELECT content FROM studio_working_docs WHERE doc=?", (key,)).fetchone()
+    sources = []
+    for label, copy_id in self._working_view_ids.items():
+        if copy_id and copy_id.startswith(ORGANIZED_PREFIX):
+            continue
+        if copy_id == self._working_copy_id:
+            if self._working_synced_block:
+                text = self.working_text.get("1.0", TASK_START_MARK) + self.working_text.get(TASK_END_MARK, "end-1c")
+            else:
+                text = self.working_text.get("1.0", "end-1c")
+        elif copy_id is None:
+            text = main_row[0] if main_row else ""
+        else:
+            _, text = read_import_copy(self.store, key, copy_id)
+        text = TASK_BLOCK.sub("", text)
+        if text.strip():
+            sources.append((label if copy_id else "工作文档", text))
+    if not sources:
+        raise ValueError("请先输入正文，或导入要整理的文件。")
+
+    win = tk.Toplevel(self)
+    win.title("一键整理资料")
+    self.sized_dialog(win, 850, 620)
+    win.transient(self)
+    win.grab_set()
+    panel = ttk.Frame(win, padding=12)
+    panel.pack(fill="both", expand=True)
+    ttk.Label(panel, text="选择要整理的资料。同名章节会归在一起，重复段块合并并保留来源。", wraplength=780).pack(anchor="w")
+    picker = ttk.Frame(panel)
+    picker.pack(fill="x", pady=(6, 8))
+    names = tk.Listbox(picker, selectmode="extended", exportselection=False, height=min(6, len(sources)))
+    scrollbar = ttk.Scrollbar(picker, orient="vertical", command=names.yview)
+    names.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    names.pack(side="left", fill="x", expand=True)
+    for label, _ in sources:
+        names.insert("end", label)
+    names.selection_set(0, "end")
+
+    preview = tk.Text(panel, wrap="word", padx=8, pady=8, undo=True)
+    footer = ttk.Frame(panel)
+    footer.pack(side="bottom", fill="x", pady=(8, 0))
+    preview_scroll = ttk.Scrollbar(panel, orient="vertical", command=preview.yview)
+    preview.configure(yscrollcommand=preview_scroll.set)
+    preview_scroll.pack(side="right", fill="y")
+    preview.pack(side="left", fill="both", expand=True)
+
+    def refresh():
+        selected = [sources[index] for index in names.curselection()]
+        content = organize_materials(selected)
+        validate_working_content(content)
+        preview.delete("1.0", "end")
+        preview.insert("1.0", content)
+        preview.edit_reset()
+        save_button.state(["!disabled"])
+
+    def save_result():
+        content = preview.get("1.0", "end-1c")
+        if not content.strip():
+            raise ValueError("整理结果为空。")
+        name = datetime.now().strftime("整理结果 %Y-%m-%d %H-%M-%S")
+        copy_id = ORGANIZED_PREFIX + uuid.uuid4().hex
+        with self.store.conn() as conn:
+            write_import_copy(conn, key, copy_id, name, content)
+        win.destroy()
+        if not self._working_dirty and not self.working_text.edit_modified():
+            self._working_copy_id = copy_id
+            self.load_working_document()
+        else:
+            refresh_working_views(self)
+        self.status.set(f"已另存为「{name}」，可在‘显示文档’下拉框打开。")
+
+    ttk.Button(footer, text="重新整理所选资料", command=lambda: self.guard(refresh)).pack(side="left")
+    ttk.Button(footer, text="取消", command=win.destroy).pack(side="right", padx=(6, 0))
+    save_button = ttk.Button(footer, text="另存整理文档", command=lambda: self.guard(save_result))
+    save_button.pack(side="right")
+    save_button.state(["disabled"])
+    names.bind("<<ListboxSelect>>", lambda event: save_button.state(["disabled"]))
+    self.guard(refresh)
+    return win
 
 
 def preview_working_document(self):

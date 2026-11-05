@@ -1,6 +1,8 @@
 """Regression tests for the installed working-document UI on Windows."""
 import os
+import sys
 import tempfile
+import time
 import tkinter as tk
 import unittest
 import zipfile
@@ -20,6 +22,7 @@ from reqdoc_working_document import (
     MAIN_DOCUMENT_LABEL,
     document_to_task_items,
     install,
+    on_working_view_selected,
     read_working_document,
     working_document_menu,
     write_working_document,
@@ -68,6 +71,97 @@ class FeedbackTests(unittest.TestCase):
 
     def button(self, parent, label):
         return next(widgets(parent, ttk.Button, label))
+
+    def test_organize_saves_separate_document_without_task_changes(self):
+        first = self.root / "甲.md"
+        second = self.root / "乙.txt"
+        first.write_text("## 背景\n\n共有段落\n\n## 参考\n\n甲的内容", encoding="utf-8")
+        second.write_text("## 背景\n\n共有段落\n\n## 说明\n\n乙的内容", encoding="utf-8")
+        dialog = self.app.import_paths([first, second])
+        self.button(dialog, "确认导入").invoke()
+        self.store.save_task(self.doc.key, "原有任务", "", "原有内容")
+        self.app.working_view_var.set(MAIN_DOCUMENT_LABEL)
+        on_working_view_selected(self.app)
+        self.app.working_text.insert("1.0", "未保存的散记\n\n")
+        before = self.store.tasks(self.doc.key)
+        original = first.read_bytes()
+
+        self.button(self.app.task_working_panel, "一键整理").invoke()
+        dialog = next(win for win in widgets(self.app, tk.Toplevel) if win.title() == "一键整理资料")
+        preview = next(widgets(dialog, tk.Text))
+        result = preview.get("1.0", "end-1c")
+        self.assertEqual(result.count("共有段落"), 1)
+        for expected in ("甲.md", "乙.txt", "甲的内容", "乙的内容", "未保存的散记"):
+            self.assertIn(expected, result)
+        self.assertNotIn("原有任务", result)
+        preview.insert("end", "整理补充")
+        self.button(dialog, "另存整理文档").invoke()
+
+        self.assertEqual(self.store.tasks(self.doc.key), before)
+        self.assertEqual(first.read_bytes(), original)
+        self.assertTrue(self.app.working_text.get("1.0", "end-1c").startswith("未保存的散记"))
+        result_label = next(label for label in self.app._working_view_ids if label.startswith("整理 · "))
+        self.app.working_view_var.set(result_label)
+        on_working_view_selected(self.app)
+        self.assertIn("整理补充", self.app.working_text.get("1.0", "end-1c"))
+        self.app.working_text.insert("end", "\n再编辑")
+        self.app.save_working_document()
+        self.app.load_working_document()
+        self.assertIn("再编辑", self.app.working_text.get("1.0", "end-1c"))
+        self.assertEqual(self.store.tasks(self.doc.key), before)
+
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows native messages")
+    def test_native_file_drop_on_document_editor(self):
+        import ctypes
+        from ctypes import wintypes
+        import struct
+
+        path = self.root / "拖进编辑区.docx"
+        document = Document()
+        document.add_paragraph("拖入的 Word 正文")
+        document.save(path)
+        self.app.show_page("tasks")
+        self.app.update()
+        if self.app._drop_after_id:
+            self.app.after_cancel(self.app._drop_after_id)
+        self.assertTrue(self.app.install_file_drop())
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel.GlobalLock.restype = ctypes.c_void_p
+        kernel.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        kernel.GlobalFree.restype = wintypes.HGLOBAL
+        user = ctypes.WinDLL("user32", use_last_error=True)
+        user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user.PostMessageW.restype = wintypes.BOOL
+        data = struct.pack("<IiiII", 20, 0, 0, 0, 1) + (str(path) + "\0\0").encode("utf-16-le")
+        handle = kernel.GlobalAlloc(2, len(data))
+        self.assertTrue(handle)
+        try:
+            ptr = kernel.GlobalLock(handle)
+            self.assertTrue(ptr)
+            ctypes.memmove(ptr, data, len(data))
+            kernel.GlobalUnlock(handle)
+            self.assertTrue(user.PostMessageW(self.app.working_text.winfo_id(), 0x0233, handle, 0))
+        except BaseException:
+            kernel.GlobalFree(handle)
+            raise
+
+        deadline = time.monotonic() + 3
+        dialog = None
+        while time.monotonic() < deadline and dialog is None:
+            self.app.update()
+            dialog = next((win for win in widgets(self.app, tk.Toplevel) if win.title().startswith("导入文件：")), None)
+            time.sleep(0.01)
+        self.assertIsNotNone(dialog, "native drop did not reach the import dialog")
+        with patch("reqdoc_working_document.messagebox.showwarning") as warning:
+            self.button(dialog, "确认导入").invoke()
+        self.assertEqual(warning.call_args.args[0], "导入提示")
+        self.assertIn("拖入的 Word 正文", self.app.working_text.get("1.0", "end-1c"))
+        self.assertFalse(self.store.tasks(self.doc.key))
 
     def test_task_navigation_dialogs_and_live_document(self):
         self.app.nav_buttons["tasks"].invoke()
