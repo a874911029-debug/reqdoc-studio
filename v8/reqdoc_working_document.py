@@ -446,6 +446,9 @@ def resolve_sync_conflict(self, conflict_id, choice):
 def show_sync_conflicts(self):
     if not self.key:
         raise ValueError("请先选择一份文档。")
+    # Commit pending editor changes before resolving conflicts; a forced task refresh
+    # must never replace unsaved text in the working-document editor.
+    self.keep_draft()
     from reqdoc_task_conversion import MAIN_COPY_ID
     with self.store.conn() as conn:
         rows = conn.execute("""
@@ -2170,6 +2173,29 @@ def import_dialog(self):
         self.import_paths(paths)
 
 
+def prepare_import_documents(paths, reader=None):
+    """Read each accepted file independently so one bad file cannot block a batch."""
+    if reader is None:
+        from reqdoc_studio import read_source
+        reader = read_source
+    prepared = []
+    errors = []
+    for raw in paths:
+        try:
+            path = Path(str(raw)).resolve(strict=True)
+            if not path.is_file():
+                raise ValueError("路径不是文件。")
+            content, warnings = reader(path)
+            prepared.append((path, content, list(warnings or [])))
+        except Exception as error:
+            try:
+                name = Path(str(raw)).name or str(raw)
+            except (TypeError, ValueError, OSError):
+                name = str(raw)
+            errors.append(f"{name}：{error}")
+    return prepared, errors
+
+
 def import_paths(self, paths):
     self.require_doc()
     from reqdoc_studio import read_source
@@ -2184,13 +2210,22 @@ def import_paths(self, paths):
         )
     if not paths:
         return
-    prepared = []
-    for raw in paths:
-        path = Path(raw).resolve()
-        text, _ = read_source(path)
-        prepared.append((path, text))
+    prepared, read_errors = prepare_import_documents(paths, read_source)
+    if read_errors:
+        messagebox.showwarning(
+            "部分资料无法读取",
+            "以下文件未加入本次导入：\n" + "\n".join(read_errors[:20]),
+            parent=self,
+        )
     if not prepared:
-        raise ValueError("没有可导入的资料。")
+        detail = "\n".join(read_errors[:20])
+        raise ValueError("没有可导入的资料。" + ("\n" + detail if detail else ""))
+    prepared = [(path, content) for path, content, _warnings in prepared]
+    source_warnings = [
+        f"{path.name}：{warning}"
+        for path, _content, warnings in prepare_import_documents(paths, read_source)[0]
+        for warning in warnings
+    ]
     win = tk.Toplevel(self)
     win.title("导入文件：创建独立副本")
     self.sized_dialog(win, 900, 680)
@@ -2224,7 +2259,7 @@ def import_paths(self, paths):
                 raise ValueError("没有识别到可转换的内容。可选择只创建导入副本。")
             if estimated > 500:
                 raise ValueError("一次导入最多生成 500 条任务，请先缩小文件范围。")
-        all_warnings = []
+        all_warnings = list(source_warnings)
         self.keep_draft()
         with ExitStack() as rollback:
             with self.s.connect() as connection:
@@ -2398,15 +2433,11 @@ def build_settings_page(self):
 
 
 
-def restore_organization_rules(self):
-    archive = filedialog.askopenfilename(
-        parent=self, title="选择包含整理规则的 ReqDoc 备份包",
-        filetypes=[("ReqDoc 备份 ZIP", "*.zip")],
-    )
-    if not archive:
-        return False
+def restore_organization_rules_from_backup(archive, target, create_safety_backup):
+    """Validate one fixed ZIP member, then back up and atomically replace local rules."""
     import zipfile
     from reqdoc_organize import OrganizeOptions
+
     member = "reqdoc-data/home/organize-rules.json"
     with zipfile.ZipFile(archive) as package:
         try:
@@ -2417,16 +2448,30 @@ def restore_organization_rules(self):
             raise ValueError("整理规则文件超过 1 MB，已拒绝恢复。")
         payload = package.read(member)
     data = json.loads(payload.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("整理规则数据格式无效，已拒绝恢复。")
     options = OrganizeOptions(**data)
     options.validate()
-    # Save current edits and keep a full pre-restore recovery point before changing the active rules.
+
+    safety_backup = create_safety_backup()
+    from reqdoc_studio import write_atomic
+    write_atomic(Path(target), payload)
+    return safety_backup
+
+
+def restore_organization_rules(self):
+    archive = filedialog.askopenfilename(
+        parent=self, title="选择包含整理规则的 ReqDoc 备份包",
+        filetypes=[("ReqDoc 备份 ZIP", "*.zip")],
+    )
+    if not archive:
+        return False
+    # Preserve pending work before making a full recovery point.
     self.keep_draft()
     if hasattr(self, "persist_notes"):
         self.persist_notes()
-    safety_backup = self.store.backup()
-    from reqdoc_studio import write_atomic
     target = Path(self.store.settings.home) / "organize-rules.json"
-    write_atomic(target, payload)
+    safety_backup = restore_organization_rules_from_backup(archive, target, self.store.backup)
     self.status.set(f"整理规则已恢复；恢复前完整备份：{safety_backup}")
     messagebox.showinfo(
         "整理规则已恢复",
