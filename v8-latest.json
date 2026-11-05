@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.13",
+  "version": "8.0.14",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.13-win64.zip",
-    "size": 24739224,
-    "sha256": "ed2fca49c8522317c3094bfdd1d6c005c8130ebd023edebe3913ad1e41e4b160"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.14-win64.zip",
+    "size": 24745559,
+    "sha256": "140a26cef874bd2d4d6bd40c9af0d75a61c59c7a357fe48f2b51d49002206b7d"
   },
-  "notes": "导入文件各自生成可切换的副本，保存会同步已转换的任务。文档支持 Ctrl+Z 撤销和标题分级显示。包含删除项目时移除自动完整备份的修复。",
-  "source_commit": "aa619ccbe4493fcf29d9c1e645ea550680d812a7"
+  "notes": "文档编辑区新增一键整理，合并所选资料并另存为可编辑文档。重写 Windows 编辑区文件拖放，统一进入导入确认流程。",
+  "source_commit": "cfc9eb05b15c0ae828c28978b0eaa6018b0fa61e"
 }
