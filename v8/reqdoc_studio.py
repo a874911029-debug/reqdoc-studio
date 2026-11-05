@@ -2047,6 +2047,9 @@ class CompactStudio(CompactStudioV4):
         top=tk.Frame(shell,bg='#FFFFFF',height=58)
         top.pack(side='top',fill='x')
         top.pack_propagate(False)
+        ttk.Button(top,text='☰',width=3,command=self.toggle_sidebar).pack(
+            side='left',padx=(10,0),pady=9
+        )
         tk.Label(top,text='ReqDoc',font=('Microsoft YaHei UI',16,'bold'),
                  bg='#FFFFFF',fg='#202938').pack(side='left',padx=(18,22))
         self.nav=tk.Frame(top,bg='#FFFFFF')
@@ -2103,7 +2106,8 @@ class CompactStudio(CompactStudioV4):
         tk.Label(self.doc_sidebar,text='本地文档 · 不联网',
                  bg='#F8F9FC',fg='#8993A4',
                  font=('Microsoft YaHei UI',8)).pack(side='bottom',anchor='w',padx=17,pady=14)
-        tk.Frame(body,bg='#E9EBF1',width=1).pack(side='left',fill='y')
+        self.sidebar_divider=tk.Frame(body,bg='#E9EBF1',width=1)
+        self.sidebar_divider.pack(side='left',fill='y')
 
         # The working document occupies the central canvas. Task context is the
         # right-hand inspector built by reqdoc_working_document.build_tasks_page.
@@ -2139,6 +2143,15 @@ class CompactStudio(CompactStudioV4):
         self._refresh_tree_after_id=self.after(50,self.refresh_tree)
         self._file_drop=None
         self._drop_after_id=self.after(240,self.install_file_drop) if sys.platform=='win32' else None
+
+    def toggle_sidebar(self):
+        """Collapse or expand the document navigator without changing selection."""
+        if self.doc_sidebar.winfo_manager():
+            self.doc_sidebar.pack_forget()
+            self.sidebar_divider.pack_forget()
+        else:
+            self.doc_sidebar.pack(side='left',fill='y',before=self.workspace)
+            self.sidebar_divider.pack(side='left',fill='y',before=self.workspace)
 
     def refresh_sidebar_tree(self):
         """Update the visible project/document navigator without editing project data."""
