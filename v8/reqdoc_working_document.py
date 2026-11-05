@@ -2218,8 +2218,8 @@ def import_paths(self, paths):
             parent=self,
         )
     if not prepared:
-        detail = "\n".join(read_errors[:20])
-        raise ValueError("没有可导入的资料。" + ("\n" + detail if detail else ""))
+        self.status.set("没有可导入的资料；请检查文件格式、编码和文件访问权限。")
+        return
 
     win = tk.Toplevel(self)
     win.title("导入文件：创建独立副本")
