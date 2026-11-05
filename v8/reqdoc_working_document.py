@@ -68,6 +68,13 @@ def ensure_working_schema(store):
                 PRIMARY KEY(doc,id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS studio_deleted_copies(
+                doc TEXT NOT NULL,
+                id TEXT NOT NULL,
+                PRIMARY KEY(doc,id)
+            )
+        """)
 
 
 def read_working_document(store, key, fallback=""):
@@ -109,6 +116,8 @@ def write_working_document(store, key, content, mode="manual", *, connection=Non
 
 def write_import_copy(conn, key, copy_id, name, content):
     validate_working_content(content)
+    if conn.execute("SELECT 1 FROM studio_deleted_copies WHERE doc=? AND id=?", (key, copy_id)).fetchone():
+        raise ValueError("该副本已删除，请重新导入文件。")
     conn.execute("""
         INSERT INTO studio_import_copies(doc,id,name,content) VALUES(?,?,?,?)
         ON CONFLICT(doc,id) DO UPDATE SET content=excluded.content
@@ -117,6 +126,8 @@ def write_import_copy(conn, key, copy_id, name, content):
 
 def read_import_copy(store, key, copy_id):
     with store.conn() as conn:
+        if conn.execute("SELECT 1 FROM studio_deleted_copies WHERE doc=? AND id=?", (key, copy_id)).fetchone():
+            raise ValueError("该副本已删除。")
         row = conn.execute(
             "SELECT name,content FROM studio_import_copies WHERE doc=? AND id=?",
             (key, copy_id),
@@ -129,6 +140,25 @@ def read_import_copy(store, key, copy_id):
         if row is None:
             raise ValueError("导入副本不存在。")
         return row
+
+
+def delete_editable_copy(store, key, copy_id):
+    if not copy_id:
+        raise ValueError("请先在‘显示文档’中选择要删除的副本。")
+    ensure_working_schema(store)
+    with store.conn() as conn:
+        if conn.execute("SELECT 1 FROM studio_deleted_copies WHERE doc=? AND id=?", (key, copy_id)).fetchone():
+            return False
+        existing = conn.execute("""
+            SELECT 1 FROM studio_import_copies WHERE doc=? AND id=?
+            UNION ALL SELECT 1 FROM studio_sources WHERE doc=? AND id=? LIMIT 1
+        """, (key, copy_id, key, copy_id)).fetchone()
+        if not existing:
+            raise ValueError("副本不存在，请重新选择文档。")
+        conn.execute("INSERT INTO studio_deleted_copies(doc,id) VALUES(?,?)", (key, copy_id))
+        conn.execute("DELETE FROM studio_import_copies WHERE doc=? AND id=?", (key, copy_id))
+        conn.execute("DELETE FROM studio_import_task_links WHERE doc=? AND copy_id=?", (key, copy_id))
+    return True
 
 
 def separate_legacy_import(conn, key, content):
@@ -161,6 +191,7 @@ def delete_working_documents(store, keys):
         conn.executemany("DELETE FROM studio_working_docs WHERE doc=?", keys)
         conn.executemany("DELETE FROM studio_import_copies WHERE doc=?", keys)
         conn.executemany("DELETE FROM studio_import_task_links WHERE doc=?", keys)
+        conn.executemany("DELETE FROM studio_deleted_copies WHERE doc=?", keys)
 
 
 def import_item_values(item):
@@ -585,6 +616,9 @@ def build_tasks_page(self):
     export.configure(menu=export_menu)
     export.pack(side="left")
     ttk.Button(tools, text="一键整理", command=lambda: self.guard(lambda: organize_working_materials(self))).pack(side="left", padx=(5, 0))
+    self.delete_copy_button = ttk.Button(tools, text="删除当前副本", command=lambda: self.guard(self.delete_current_copy))
+    self.delete_copy_button.pack(side="left", padx=(5, 0))
+    self.delete_copy_button.state(["disabled"])
     self.working_hint = ttk.Label(
         left, text="这里编辑软件生成的工作副本；原始文件只读归档，不在此处预览。",
         foreground="#64748B",
@@ -1050,10 +1084,15 @@ def refresh_working_views(self):
     if self.key:
         with self.store.conn() as conn:
             sources = conn.execute(
-                "SELECT id,name FROM studio_sources WHERE doc=? ORDER BY created DESC,id", (self.key,)
+                """SELECT id,name FROM studio_sources AS source WHERE doc=?
+                   AND NOT EXISTS(SELECT 1 FROM studio_deleted_copies AS removed
+                                  WHERE removed.doc=source.doc AND removed.id=source.id)
+                   ORDER BY created DESC,id""", (self.key,)
             ).fetchall()
             preserved = conn.execute(
-                "SELECT id,name FROM studio_import_copies WHERE doc=? AND id=?",
+                """SELECT id,name FROM studio_import_copies AS copy WHERE doc=? AND id=?
+                   AND NOT EXISTS(SELECT 1 FROM studio_deleted_copies AS removed
+                                  WHERE removed.doc=copy.doc AND removed.id=copy.id)""",
                 (self.key, LEGACY_IMPORT_COPY),
             ).fetchall()
             organized = conn.execute(
@@ -1089,6 +1128,7 @@ def on_working_view_selected(self):
 
 
 def load_working_document(self):
+    self.delete_copy_button.state(["!disabled"] if self.key and self._working_copy_id is not None else ["disabled"])
     if not self.key:
         self._working_saved_key = None
         self._working_copy_id = None
@@ -1163,6 +1203,26 @@ def keep_draft(self):
     if self.key and self._working_saved_key == self.key and (self._working_dirty or self.working_text.edit_modified()):
         return self.save_working_document(silent=True)
     return False
+
+
+def delete_current_copy(self):
+    self.require_doc()
+    copy_id = self._working_copy_id
+    if copy_id is None:
+        raise ValueError("请先在‘显示文档’中选择要删除的副本。")
+    name = self._working_copy_name
+    if not messagebox.askyesno(
+        "删除当前副本",
+        f"删除副本「{name}」及其编辑内容？\n该副本与任务的同步关联也会移除。\n\n删除后无法撤销。任务请在任务列表中单独管理。",
+        parent=self, icon="warning",
+    ):
+        return
+    delete_editable_copy(self.store, self.key, copy_id)
+    self._working_copy_id = None
+    self._working_copy_name = ""
+    self._working_dirty = False
+    self.load_working_document()
+    self.status.set(f"已删除副本「{name}」。")
 
 
 def autosave(self):
@@ -2128,6 +2188,7 @@ def install(StudioClass, StoreClass):
         "working_document_modified": working_document_modified,
         "load_working_document": load_working_document,
         "save_working_document": save_working_document,
+        "delete_current_copy": delete_current_copy,
         "keep_draft": keep_draft,
         "autosave": autosave,
         "load_doc": load_doc,

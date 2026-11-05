@@ -181,6 +181,68 @@ class FeedbackTests(unittest.TestCase):
         with self.store.conn() as conn:
             self.assertFalse(conn.execute("SELECT id FROM studio_import_copies WHERE doc=?", (self.doc.key,)).fetchall())
 
+    def test_delete_imported_copy_persists_and_keeps_existing_tasks(self):
+        from reqdoc_working_document import read_import_copy, write_import_copy
+
+        first = self.root / "待删除.md"
+        second = self.root / "保留.md"
+        first.write_text("## 标题\n\n已导入内容", encoding="utf-8")
+        second.write_text("另一份副本", encoding="utf-8")
+        imported = self.app.import_paths([first, second])
+        self.button(imported, "确认导入").invoke()
+        copy_id = self.app._working_copy_id
+        copy_label = self.app.working_view_var.get()
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
+            self.app.convert_working_document()
+        tasks = self.store.tasks(self.doc.key)
+        self.assertTrue(tasks)
+        self.app.working_text.insert("end", "未保存的修改")
+        button = self.button(self.app.task_working_panel, "删除当前副本")
+        self.assertFalse(button.instate(["disabled"]))
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=False):
+            button.invoke()
+        self.assertEqual(self.app._working_copy_id, copy_id)
+        self.assertIn("未保存的修改", self.app.working_text.get("1.0", "end-1c"))
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
+            button.invoke()
+        self.assertNotIn(copy_label, self.app._working_view_ids)
+        self.assertIsNone(self.app._working_copy_id)
+        self.assertTrue(button.instate(["disabled"]))
+        self.assertEqual(self.store.tasks(self.doc.key), tasks)
+        self.assertTrue(any("保留.md" in label for label in self.app._working_view_ids))
+        reopened = WorkingStore(self.store.settings)
+        with self.assertRaises(ValueError):
+            read_import_copy(reopened, self.doc.key, copy_id)
+        with reopened.conn() as conn:
+            archived = conn.execute("SELECT stored FROM studio_sources WHERE doc=? AND id=?", (self.doc.key, copy_id)).fetchone()[0]
+            self.assertTrue((self.store.settings.docs_dir / archived).is_file())
+            self.assertFalse(conn.execute("SELECT 1 FROM studio_import_task_links WHERE doc=? AND copy_id=?", (self.doc.key, copy_id)).fetchone())
+        with self.assertRaises(ValueError), reopened.conn() as conn:
+            write_import_copy(conn, self.doc.key, copy_id, first.name, "旧回调写入")
+        self.app.load_working_document()
+        self.assertNotIn(copy_label, self.app._working_view_ids)
+        imported = self.app.import_paths([first])
+        self.button(imported, "确认导入").invoke()
+        self.assertNotEqual(self.app._working_copy_id, copy_id)
+        self.assertIn("已导入内容", self.app.working_text.get("1.0", "end-1c"))
+
+    def test_delete_organized_result_removes_it_from_the_document_list(self):
+        self.app.working_text.insert("1.0", "整理测试内容")
+        self.button(self.app.task_working_panel, "一键整理").invoke()
+        dialog = next(win for win in widgets(self.app, tk.Toplevel) if win.title() == "一键整理资料")
+        self.wait_for_organization(dialog)
+        self.button(dialog, "另存整理文档").invoke()
+        label = next(label for label in self.app._working_view_ids if label.startswith("整理 · "))
+        self.app.working_view_var.set(label)
+        on_working_view_selected(self.app)
+        copy_id = self.app._working_copy_id
+        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
+            self.button(self.app.task_working_panel, "删除当前副本").invoke()
+        self.app.load_working_document()
+        self.assertNotIn(label, self.app._working_view_ids)
+        with self.store.conn() as conn:
+            self.assertFalse(conn.execute("SELECT id FROM studio_import_copies WHERE doc=? AND id=?", (self.doc.key, copy_id)).fetchone())
+
     @unittest.skipUnless(sys.platform == "win32", "requires Windows native messages")
     def test_native_file_drop_on_document_editor(self):
         import ctypes

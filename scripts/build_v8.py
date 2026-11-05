@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "完善一键整理：无标题散记分块、正文相似归类、可保存的关键词规则、重复合并、数值与否定差异核对。提供归类说明和待归类内容，后台运行可取消，结果单独保存。",
+                "notes": "增加删除当前副本，可删除导入副本和整理结果，重新打开后保持删除状态。包含完善的一键整理规则、正文主题归类、相近内容核对与规则记忆。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")
