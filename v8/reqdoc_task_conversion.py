@@ -138,7 +138,7 @@ def match_conversion_links(links, items, same_mode):
 
 
 def open_conversion_dialog(app, content):
-    from reqdoc_working_document import import_task_links, match_import_task_links, save_import_task_link, link_existing_copy_tasks
+    from reqdoc_working_document import import_task_links, save_import_task_link, link_existing_copy_tasks
     key = app.key
     copy_id = app._working_copy_id or MAIN_COPY_ID
     with app.store.conn() as conn:

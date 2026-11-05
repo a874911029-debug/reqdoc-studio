@@ -177,3 +177,16 @@ class LibraryConversionTests(unittest.TestCase):
             app.delete_copy_button.invoke()
         self.assertIsNone(self.store.service.get_document(self.doc.key))
         self.assertTrue(app.delete_copy_button.instate(["disabled"]))
+
+    def test_migration_can_create_a_library_beside_existing_home_and_docs(self):
+        target = self.settings.library_root / "总文档库"
+        migrated = migrate_portable_library(self.store, target)
+        self.assertTrue(migrated.db_path.is_file())
+        self.assertEqual(WorkingStore(migrated).service.document(self.doc.key).name, self.doc.name)
+
+    def test_interrupted_history_journal_write_does_not_block_startup(self):
+        folder = self.settings.home / "history-deletions" / "delete-interrupted"
+        folder.mkdir(parents=True)
+        (folder / "manifest.json.temporary.tmp").write_text("partial", encoding="utf-8")
+        recover_history_deletions(self.store)
+        self.assertFalse(folder.exists())

@@ -15,7 +15,7 @@ def migrate_portable_library(store, target):
     from reqdoc_studio import write_atomic
     target = Path(target).resolve()
     source = store.settings.library_root.resolve()
-    if target.is_relative_to(source) or source.is_relative_to(target):
+    if source.is_relative_to(target) or target.is_relative_to(store.settings.home.resolve()) or target.is_relative_to(store.settings.docs_dir.resolve()):
         raise ValueError("软件资料库位置与旧资料库重叠，请移动软件文件夹后重试。")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
@@ -55,6 +55,10 @@ def recover_history_deletions(store):
         journal = folder / "manifest.json"
         staged = folder / "original"
         if not journal.exists():
+            if staged.exists():
+                raise ValueError("历史删除记录缺少恢复信息，请保留清理目录。")
+            for temporary in folder.glob("manifest.json.*.tmp"):
+                temporary.unlink()
             folder.rmdir()
             continue
         data = json.loads(journal.read_text("utf-8"))
