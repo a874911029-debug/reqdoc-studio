@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "新增本地资料库，按总文档库、项目、文档浏览。资料库默认随软件保存，旧数据自动迁移。导入资料作为历史记录管理，可删除历史及整理文档。转任务增加可编辑预览、主题逐条和章节汇总模式，重复条目保持关联。",
+                "notes": "在 V8.0.18 资料库与任务转换基础上，新增保存失败提示并保留编辑内容；来源与任务双侧修改会记录冲突并允许选择处理；完整备份纳入本地整理规则，支持从备份单独恢复。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")
