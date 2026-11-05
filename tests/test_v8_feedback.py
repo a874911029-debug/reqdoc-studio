@@ -74,12 +74,12 @@ class FeedbackTests(unittest.TestCase):
 
     def test_document_first_workspace_has_topbar_tree_and_inspector(self):
         self.app.update_idletasks()
-        self.assertTrue(self.app.doc_sidebar.winfo_ismapped())
+        self.assertTrue(self.app.doc_sidebar.winfo_manager())
         self.app.toggle_sidebar()
         self.assertFalse(self.app.doc_sidebar.winfo_manager())
         self.app.toggle_sidebar()
         self.assertTrue(self.app.doc_sidebar.winfo_manager())
-        self.assertTrue(self.app.nav_buttons["tasks"].winfo_ismapped())
+        self.assertTrue(self.app.nav_buttons["tasks"].winfo_manager())
         self.assertIs(self.app.nav_buttons["tasks"].master, self.app.nav)
 
         # Search is a view-only filter: projects and documents remain unchanged.
@@ -88,14 +88,14 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(self.app.tree.get_children(), ())
         self.app.sidebar_query.set("文档 001")
         self.assertTrue(self.app.tree.exists("d:" + self.doc.key))
-        self.assertTrue(self.app.pages["settings"].winfo_ismapped())
+        self.assertTrue(self.app.pages["settings"].winfo_manager())
 
         self.app.tree.selection_set("d:" + self.doc.key)
         self.app.sidebar_tree_select()
         self.app.update_idletasks()
-        self.assertTrue(self.app.pages["tasks"].winfo_ismapped())
-        self.assertTrue(self.app.task_working_panel.winfo_ismapped())
-        self.assertTrue(self.app.task_right_panel.winfo_ismapped())
+        self.assertTrue(self.app.pages["tasks"].winfo_manager())
+        self.assertTrue(self.app.task_working_panel.winfo_manager())
+        self.assertTrue(self.app.task_right_panel.winfo_manager())
         self.assertEqual(self.app.s.document(self.doc.key).name, "文档 001")
 
     def wait_for_organization(self, dialog):
