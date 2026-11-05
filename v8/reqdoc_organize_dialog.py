@@ -228,7 +228,7 @@ def open_organize_dialog(app, sources, on_save):
     run_button = ttk.Button(footer, text="重新整理所选资料", command=lambda: app.guard(refresh))
     run_button.pack(side="left")
     ttk.Button(footer, text="取消", command=close).pack(side="right", padx=(6, 0))
-    save_button = ttk.Button(footer, text="另存整理文档", command=lambda: app.guard(save))
+    save_button = ttk.Button(footer, text="另存整理文档", style="Accent.TButton", command=lambda: app.guard(save))
     save_button.pack(side="right")
     save_button.state(["disabled"])
     names.bind("<<ListboxSelect>>", invalidate)
