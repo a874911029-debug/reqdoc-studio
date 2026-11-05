@@ -1,12 +1,12 @@
 {
   "schema": 8,
-  "version": "8.0.18",
+  "version": "8.0.19",
   "minimum_supported_version": "8.0.0",
   "asset": {
-    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.18-win64.zip",
-    "size": 24802253,
-    "sha256": "3e96aa817bfb399e4380fb2bed9a460dbb169d806c0e8c6b9709ad608230f9eb"
+    "url": "https://raw.githubusercontent.com/a874911029-debug/reqdoc-studio/updates/reqdoc-v8.0.19-win64.zip",
+    "size": 24813723,
+    "sha256": "b04a527e6095f7ffa0114e680be488e9c1c2e1ac1d40a76b2e7056b3b34ad455"
   },
-  "notes": "新增本地资料库，按总文档库、项目、文档浏览。资料库默认随软件保存，旧数据自动迁移。导入资料作为历史记录管理，可删除历史及整理文档。转任务增加可编辑预览、主题逐条和章节汇总模式，重复条目保持关联。",
-  "source_commit": "6e2419bd824e3f153b83353dfc5feec68abc1ae8"
+  "notes": "V8.0.19 数据安全与体验升级：保存失败时保留编辑内容并提示；来源与任务双侧修改会记录冲突，可选择采用来源或保留任务；完整备份包含整理规则并支持安全恢复；多文件导入逐个读取，中文路径与无效路径校验增强；统一浅色工作区、白色编辑区和主要操作按钮样式。",
+  "source_commit": "00b296e5ea716418f024be9dbf402b7cc1547d91"
 }
