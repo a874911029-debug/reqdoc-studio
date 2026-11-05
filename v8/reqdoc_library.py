@@ -152,7 +152,6 @@ def open_library_item(self):
         self.library_tree.item(self.library_tree.selection()[0], open=True)
         return
     self.load_doc(key)
-    self.keep_draft()
     if copy_id:
         with self.store.conn() as conn:
             removed = conn.execute("SELECT 1 FROM studio_deleted_copies WHERE doc=? AND id=?", (key, copy_id)).fetchone()
@@ -188,6 +187,8 @@ def delete_library_item(self):
         label = self.library_tree.item(self.library_tree.selection()[0], "text")
         if not messagebox.askyesno("删除文档", f"删除「{label}」及其编辑内容？\n删除后无法撤销。", parent=self, icon="warning"):
             return
+        if self.key == key and self._working_copy_id != copy_id:
+            self.keep_draft()
         if kind == "history":
             delete_history_document(self.store, key, copy_id)
         else:

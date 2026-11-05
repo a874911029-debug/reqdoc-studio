@@ -689,8 +689,7 @@ class FeedbackTests(unittest.TestCase):
             self.button(self.app.pages["tasks"], "导入文档").invoke()
             win = next(w for w in widgets(self.app, tk.Toplevel) if w.wm_title() == "导入文件：创建独立副本")
             self.button(win, "确认导入").invoke()
-        with patch("reqdoc_working_document.messagebox.askyesno", return_value=True):
-            self.button(self.app.pages["tasks"], "转成任务").invoke()
+        self.convert_preview()
         self.assertEqual([(row.title, row.section) for row in self.store.tasks(self.doc.key)],
                          [("背景", "背景"), ("检查按钮", "交互")])
         self.assertEqual(source.read_bytes(), before)

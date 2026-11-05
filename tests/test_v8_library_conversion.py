@@ -51,7 +51,7 @@ class LibraryConversionTests(unittest.TestCase):
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "profile"), "REQDOC_V8_DATA": ""}), \
              patch("reqdoc.config.sys.frozen", True, create=True), patch("reqdoc.config.sys.executable", str(program)):
             pending = Settings.from_env()
-            self.assertEqual(pending.portable_target, application / "总文档库")
+            self.assertEqual(pending.portable_target, (application / "总文档库").resolve())
             migrated = migrate_portable_library(self.store, pending.portable_target)
             self.assertTrue(Settings.from_env().portable)
         reopened = WorkingStore(migrated)
@@ -63,7 +63,7 @@ class LibraryConversionTests(unittest.TestCase):
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "profile"), "REQDOC_V8_DATA": ""}), \
              patch("reqdoc.config.sys.frozen", True, create=True), patch("reqdoc.config.sys.executable", str(copied / program.name)):
             active = Settings.from_env()
-        self.assertEqual(active.library_root, copied / "总文档库")
+        self.assertEqual(active.library_root, (copied / "总文档库").resolve())
         self.assertEqual(WorkingStore(active).service.get_requirement(task.id), task)
 
     def test_library_root_project_document_and_history_deletion_preserve_used_images(self):
@@ -76,6 +76,7 @@ class LibraryConversionTests(unittest.TestCase):
             write_import_copy(conn, self.doc.key, sid, source.name, text)
             archive = self.settings.docs_dir / conn.execute("SELECT stored FROM studio_sources WHERE id=?", (sid,)).fetchone()[0]
         app = self.app()
+        app.working_text.insert("1.0", "保留未保存的工作正文")
         app.show_page("library")
         self.assertEqual(app.library_tree.item("library-root", "text"), "总文档库")
         project_node = app.library_tree.get_children("library-root")[0]
@@ -85,6 +86,7 @@ class LibraryConversionTests(unittest.TestCase):
         app.library_tree.selection_set(history)
         with patch("reqdoc_library.messagebox.askyesno", return_value=True):
             delete_library_item(app)
+        self.assertIn("保留未保存的工作正文", app.working_text.get("1.0", "end-1c"))
         self.assertFalse(archive.exists())
         self.assertFalse(any(item[0] == "history" for item in app.library_items.values()))
         media = list((archive.parent / "media").iterdir())
@@ -142,7 +144,7 @@ class LibraryConversionTests(unittest.TestCase):
             return win, button
 
         win, confirm = preview()
-        title = next(widgets(win, ttk.Entry))
+        title = next(widget for widget in widgets(win, ttk.Entry) if type(widget) is ttk.Entry)
         title.delete(0, "end")
         title.insert(0, "编辑后的任务标题")
         confirm.invoke()
@@ -157,3 +159,21 @@ class LibraryConversionTests(unittest.TestCase):
         app.working_text.replace("1.0", "end-1c", content.replace("入口用暖光。", "入口改用冷光。"))
         app.save_working_document()
         self.assertEqual(self.store.service.get_requirement(tasks[0].id).content, "入口改用冷光。")
+
+    def test_changing_conversion_mode_keeps_only_exact_existing_links(self):
+        from reqdoc_task_conversion import match_conversion_links
+        a = {"title": "甲", "section": "主题", "content": "正文甲"}
+        b = {"title": "乙", "section": "主题", "content": "正文乙"}
+        links = [(1, 0, a), (2, 1, b)]
+        matched = match_conversion_links(links, [b, a], False)
+        self.assertEqual([matched[position][0] for position in (0, 1)], [2, 1])
+        self.assertFalse(match_conversion_links(links, [{"title": "新项", "section": "主题", "content": "新正文"}], False))
+
+    def test_working_document_has_a_visible_delete_action(self):
+        app = self.app()
+        self.assertEqual(app.delete_copy_button.cget("text"), "删除当前文档")
+        self.assertFalse(app.delete_copy_button.instate(["disabled"]))
+        with patch("reqdoc_studio.messagebox.askyesno", return_value=True), patch("reqdoc_studio.messagebox.showinfo"):
+            app.delete_copy_button.invoke()
+        self.assertIsNone(self.store.service.get_document(self.doc.key))
+        self.assertTrue(app.delete_copy_button.instate(["disabled"]))

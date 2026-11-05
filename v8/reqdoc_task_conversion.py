@@ -122,6 +122,21 @@ def conversion_settings(conn, key, copy_id):
     return json.loads(row[0]) if row else {"mode": "automatic", "rules_text": "", "organized": copy_id.startswith("organized-")}
 
 
+def match_conversion_links(links, items, same_mode):
+    from reqdoc_working_document import match_import_task_links
+    if same_mode:
+        return match_import_task_links(links, items)
+    exact = defaultdict(list)
+    for task_id, _, item in links:
+        exact[(item["title"], item["section"], item["content"])].append((task_id, item))
+    matches = {}
+    for position, item in enumerate(items):
+        candidates = exact.get((item["title"], item["section"], item["content"]), [])
+        if candidates:
+            matches[position] = candidates.pop(0)
+    return matches
+
+
 def open_conversion_dialog(app, content):
     from reqdoc_working_document import import_task_links, match_import_task_links, save_import_task_link, link_existing_copy_tasks
     key = app.key
@@ -257,11 +272,11 @@ def open_conversion_dialog(app, content):
             previous = conversion_settings(conn, key, copy_id)
             if previous == settings and settings["mode"] == "automatic" and not settings["organized"]:
                 link_existing_copy_tasks(conn, key, copy_id, rows)
-            links = import_task_links(conn, key, copy_id) if previous == settings else []
+            links = import_task_links(conn, key, copy_id)
         state["rows"] = [dict(row) for row in rows]
         state["originals"] = rows
         state["settings"] = settings
-        state["matched"] = match_import_task_links(links, rows)
+        state["matched"] = match_conversion_links(links, rows, previous == settings)
         state["chosen"] = set(range(len(rows))) - state["matched"].keys()
         state["current"] = None
         render()
@@ -303,16 +318,18 @@ def open_conversion_dialog(app, content):
             raise ValueError("识别方式已更改，请先重新识别。")
         apply()
         positions = sorted(state["chosen"])
-        if not positions:
+        if not positions and (not state["rows"] or len(state["matched"]) != len(state["rows"])):
             raise ValueError("请勾选要生成的新任务。")
         with app.s.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM studio_deleted_copies WHERE doc=? AND id=?", (key, copy_id)).fetchone():
                 raise ValueError("当前文档已删除，请关闭预览后重新选择。")
             current = conversion_settings(conn, key, copy_id)
+            matched = match_conversion_links(import_task_links(conn, key, copy_id), state["originals"], current == state["settings"])
             if current != state["settings"]:
                 conn.execute("DELETE FROM studio_import_task_links WHERE doc=? AND copy_id=?", (key, copy_id))
-            matched = match_import_task_links(import_task_links(conn, key, copy_id), state["originals"])
+            for position, (task_id, _) in matched.items():
+                save_import_task_link(conn, key, copy_id, task_id, position, state["originals"][position])
             positions = [position for position in positions if position not in matched]
             rows = [state["rows"][position] for position in positions]
             ids = app.s.commit_task_rows(key, rows, connection=conn)
@@ -326,7 +343,7 @@ def open_conversion_dialog(app, content):
         app.refresh_tasks()
         app.refresh_progress()
         app.refresh_home()
-        app.status.set(f"已按预览生成 {len(ids)} 条任务。")
+        app.status.set(f"已确认任务关联，新增 {len(ids)} 条任务。")
 
     def choose_all(value):
         apply()
