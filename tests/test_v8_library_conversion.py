@@ -280,6 +280,46 @@ class LibraryConversionTests(unittest.TestCase):
         self.assertEqual(app.sync_conflict_button.cget("text"), "同步冲突 (0)")
 
 
+    def test_source_task_conflict_can_choose_source_content(self):
+        app = self.app()
+        source_content = "## 灯光\\n\\n照明使用暖色调。"
+        item = conversion_items(source_content)[0]
+        task = self.store.save_task(
+            self.doc.key, item["title"], item["section"], item["content"]
+        )
+        copy_id = "history-source-choice"
+        with self.store.conn() as conn:
+            write_import_copy(conn, self.doc.key, copy_id, "灯光资料.md", source_content)
+            save_import_task_link(conn, self.doc.key, copy_id, task.id, 0, item)
+        task_edit = item["content"] + "\\n任务侧补充限制。"
+        self.store.save_task(
+            self.doc.key, item["title"], item["section"], task_edit, rid=task.id
+        )
+        source_updated = source_content.replace("暖色调", "冷色调")
+        with self.store.conn() as conn:
+            write_import_copy(conn, self.doc.key, copy_id, "灯光资料.md", source_updated)
+            sync_import_tasks(conn, self.doc.key, copy_id, source_updated)
+            conflict_id = conn.execute(
+                "SELECT id FROM studio_sync_conflicts WHERE doc=? AND copy_id=? AND task_id=? AND status='unresolved'",
+                (self.doc.key, copy_id, task.id),
+            ).fetchone()[0]
+
+        resolve_sync_conflict(app, conflict_id, "source")
+        self.assertIn("冷色调", self.store.service.get_requirement(task.id).content)
+        self.assertNotIn("任务侧补充限制", self.store.service.get_requirement(task.id).content)
+        with self.store.conn() as conn:
+            status = conn.execute(
+                "SELECT status,resolution FROM studio_sync_conflicts WHERE id=?",
+                (conflict_id,),
+            ).fetchone()
+            baseline = json.loads(conn.execute(
+                "SELECT source_item FROM studio_import_task_links WHERE doc=? AND copy_id=? AND task_id=?",
+                (self.doc.key, copy_id, task.id),
+            ).fetchone()[0])
+        self.assertEqual(status, ("resolved", "source"))
+        self.assertIn("冷色调", baseline["content"])
+
+
     def test_import_preparation_keeps_good_unicode_files_when_one_file_fails(self):
         folder = self.root / "中文资料目录"
         folder.mkdir()
