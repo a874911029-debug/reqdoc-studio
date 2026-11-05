@@ -72,6 +72,28 @@ class FeedbackTests(unittest.TestCase):
     def button(self, parent, label):
         return next(widgets(parent, ttk.Button, label))
 
+    def test_document_first_workspace_has_topbar_tree_and_inspector(self):
+        self.app.update_idletasks()
+        self.assertTrue(self.app.doc_sidebar.winfo_ismapped())
+        self.assertTrue(self.app.nav_buttons["tasks"].winfo_ismapped())
+        self.assertIs(self.app.nav_buttons["tasks"].master, self.app.nav)
+
+        # Search is a view-only filter: projects and documents remain unchanged.
+        self.app.show_page("settings")
+        self.app.sidebar_query.set("不存在的搜索条目")
+        self.assertEqual(self.app.tree.get_children(), ())
+        self.app.sidebar_query.set("文档 001")
+        self.assertTrue(self.app.tree.exists("d:" + self.doc.key))
+        self.assertTrue(self.app.pages["settings"].winfo_ismapped())
+
+        self.app.tree.selection_set("d:" + self.doc.key)
+        self.app.sidebar_tree_select()
+        self.app.update_idletasks()
+        self.assertTrue(self.app.pages["tasks"].winfo_ismapped())
+        self.assertTrue(self.app.task_working_panel.winfo_ismapped())
+        self.assertTrue(self.app.task_right_panel.winfo_ismapped())
+        self.assertEqual(self.store.service.get_document(self.doc.key).name, "文档 001")
+
     def wait_for_organization(self, dialog):
         save = self.button(dialog, "另存整理文档")
         deadline = time.monotonic() + 8
