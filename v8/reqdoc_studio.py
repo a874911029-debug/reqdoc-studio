@@ -2038,38 +2038,126 @@ class CompactStudio(CompactStudioV4):
         self.checked_ids=set();self.visible_ids=[];self._refreshing_tasks=False;self._task_focus_id=None
         self.insert_after_id=None;self.progress_chapter_map={};self.progress_group_map={};self.progress_task_doc_map={}
         self.current_project_name=None;self.document_map={};self.import_source_map={}
-        self.configure(bg='#F2F5FA')
-        shell=tk.Frame(self,bg='#F2F5FA');shell.pack(fill='both',expand=True)
-        self.nav=tk.Frame(shell,bg='#173252',width=148);self.nav.pack(side='left',fill='y');self.nav.pack_propagate(False)
-        tk.Label(self.nav,text='reqdoc',font=('Microsoft YaHei',22,'bold'),bg='#173252',fg='white').pack(anchor='w',padx=16,pady=(20,0))
-        tk.Label(self.nav,text='文档与任务',font=('Microsoft YaHei',9),bg='#173252',fg='#C7D7EB').pack(anchor='w',padx=18,pady=(0,20))
+        # V8.0.20 candidate: document-first shell; preserve existing page and task widgets.
+        self.configure(bg='#F5F6F9')
+        shell=tk.Frame(self,bg='#F5F6F9')
+        shell.pack(fill='both',expand=True)
+
+        # A compact top toolbar replaces the old full-height blue navigation rail.
+        top=tk.Frame(shell,bg='#FFFFFF',height=58)
+        top.pack(side='top',fill='x')
+        top.pack_propagate(False)
+        tk.Label(top,text='ReqDoc',font=('Microsoft YaHei UI',16,'bold'),
+                 bg='#FFFFFF',fg='#202938').pack(side='left',padx=(18,22))
+        self.nav=tk.Frame(top,bg='#FFFFFF')
+        self.nav.pack(side='left',fill='y')
         self.nav_buttons={}
         for label,page in self.NAV_ITEMS:
-            b=tk.Button(self.nav,text='  '+label,anchor='w',font=('Microsoft YaHei',10),
-                        bg='#173252',fg='white',activebackground='#2B68B7',activeforeground='white',
-                        relief='flat',bd=0,padx=10,pady=9,cursor='hand2',
-                        command=lambda p=page:self.show_page(p))
-            b.pack(fill='x',padx=8,pady=2);self.nav_buttons[page]=b
-        tk.Frame(self.nav,bg='#45617F',height=1).pack(fill='x',padx=14,pady=(16,10))
-        tk.Label(self.nav,text='本地数据 · 自动草稿',font=('Microsoft YaHei',8),bg='#173252',fg='#AFC1D7').pack(side='bottom',anchor='w',padx=15,pady=14)
+            button=tk.Button(
+                self.nav,text=label,font=('Microsoft YaHei UI',9),
+                bg='#FFFFFF',fg='#586478',activebackground='#EEEAFB',
+                activeforeground='#5541AD',bd=0,relief='flat',
+                padx=11,pady=10,cursor='hand2',
+                command=lambda p=page:self.show_page(p),
+            )
+            button.pack(side='left',padx=(0,2),pady=8)
+            self.nav_buttons[page]=button
+        ttk.Button(top,text='＋ 新建文档',
+                   command=lambda:self.guard(self.new_document)).pack(side='right',padx=(0,16),pady=9)
+        tk.Frame(shell,bg='#E9EBF1',height=1).pack(side='top',fill='x')
 
-        body=ttk.Frame(shell);body.pack(side='left',fill='both',expand=True)
-        context=ttk.Frame(body,padding=(16,7));context.pack(fill='x')
-        self.context_label=ttk.Label(context,text='当前文档：尚未选择',foreground='#52647B')
+        # Persistent document tree on the left, like a document editor rather than a
+        # separate project-management page. Search filters the tree only, not stored data.
+        body=tk.Frame(shell,bg='#FFFFFF')
+        body.pack(side='top',fill='both',expand=True)
+        self.doc_sidebar=tk.Frame(body,bg='#F8F9FC',width=242)
+        self.doc_sidebar.pack(side='left',fill='y')
+        self.doc_sidebar.pack_propagate(False)
+        sidebar_header=tk.Frame(self.doc_sidebar,bg='#F8F9FC')
+        sidebar_header.pack(fill='x',padx=14,pady=(18,9))
+        tk.Label(sidebar_header,text='文档',font=('Microsoft YaHei UI',12,'bold'),
+                 bg='#F8F9FC',fg='#303846').pack(side='left')
+        ttk.Button(sidebar_header,text='＋',width=3,
+                   command=lambda:self.guard(self.new_project)).pack(side='right')
+        ttk.Button(sidebar_header,text='▤',width=3,
+                   command=lambda:self.guard(self.new_document)).pack(side='right',padx=(0,5))
+        self.sidebar_query=tk.StringVar()
+        sidebar_search=ttk.Entry(self.doc_sidebar,textvariable=self.sidebar_query)
+        sidebar_search.pack(fill='x',padx=14,pady=(0,10))
+        self.sidebar_query.trace_add('write',lambda *args:self.refresh_sidebar_tree())
+        sidebar_tree_area=ttk.Frame(self.doc_sidebar,style='Sidebar.TFrame')
+        sidebar_tree_area.pack(fill='both',expand=True,padx=(8,5))
+        self.tree=ttk.Treeview(sidebar_tree_area,show='tree',selectmode='browse',
+                               style='Sidebar.Treeview',height=20)
+        sidebar_scroll=ttk.Scrollbar(sidebar_tree_area,orient='vertical',command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sidebar_scroll.set)
+        sidebar_scroll.pack(side='right',fill='y')
+        self.tree.pack(side='left',fill='both',expand=True)
+        self.tree.bind('<<TreeviewSelect>>',
+                       lambda event:self.guard(self.sidebar_tree_select))
+        tk.Label(self.doc_sidebar,text='本地文档 · 不联网',
+                 bg='#F8F9FC',fg='#8993A4',
+                 font=('Microsoft YaHei UI',8)).pack(side='bottom',anchor='w',padx=17,pady=14)
+        tk.Frame(body,bg='#E9EBF1',width=1).pack(side='left',fill='y')
+
+        # The working document occupies the central canvas. Task context is the
+        # right-hand inspector built by reqdoc_working_document.build_tasks_page.
+        self.workspace=ttk.Frame(body)
+        self.workspace.pack(side='left',fill='both',expand=True)
+        context=ttk.Frame(self.workspace,padding=(22,12,20,8))
+        context.pack(fill='x')
+        self.context_label=ttk.Label(
+            context,text='当前文档：尚未选择',foreground='#788394',
+            font=('Microsoft YaHei UI',9),
+        )
         self.context_label.pack(side='left',fill='x',expand=True)
-        ttk.Button(context,text='项目与文档',command=lambda:self.show_page('projects')).pack(side='right')
-        # 隐藏树仅为兼容旧引擎方法，不参与界面布局，不会在各页面重复显示。
-        self.tree=ttk.Treeview(self)
-        self.pages_host=ttk.Frame(body,padding=(16,8));self.pages_host.pack(fill='both',expand=True)
-        self.pages={name:ttk.Frame(self.pages_host) for name in ('home','projects','documents','import','tasks','progress','export','settings')}
-        self.build_home_page();self.build_projects_page();self.build_documents_page();self.build_import_page()
-        self.build_tasks_page();self.build_progress_page();self.build_export_page();self.build_settings_page();self.build_aux()
+        ttk.Button(context,text='显示项目列表',
+                   command=lambda:self.show_page('projects')).pack(side='right')
+        self.pages_host=ttk.Frame(self.workspace,padding=(22,6,20,18))
+        self.pages_host.pack(fill='both',expand=True)
+        self.pages={
+            name:ttk.Frame(self.pages_host)
+            for name in ('home','projects','documents','import','tasks','progress','export','settings')
+        }
+        self.build_home_page()
+        self.build_projects_page()
+        self.build_documents_page()
+        self.build_import_page()
+        self.build_tasks_page()
+        self.build_progress_page()
+        self.build_export_page()
+        self.build_settings_page()
+        self.build_aux()
         self.status=tk.StringVar(value='就绪 · 数据保存在本机')
         ttk.Label(self,textvariable=self.status,style='Status.TLabel').pack(fill='x')
         self.show_page('projects')
         self._refresh_tree_after_id=self.after(50,self.refresh_tree)
         self._file_drop=None
         self._drop_after_id=self.after(240,self.install_file_drop) if sys.platform=='win32' else None
+
+    def refresh_sidebar_tree(self):
+        """Update the visible project/document navigator without editing project data."""
+        if not hasattr(self,'tree') or not hasattr(self,'s'):
+            return
+        self.refresh_tree()
+
+    def sidebar_tree_select(self):
+        if getattr(self,'_sidebar_refreshing',False):
+            return
+        selection=self.tree.selection()
+        if not selection:
+            return
+        item=selection[0]
+        if item.startswith('d:'):
+            key=item[2:]
+            if key!=self.key:
+                self.load_doc(key)
+            self.show_page('tasks')
+        elif item.startswith('p:'):
+            values=self.tree.item(item,'values')
+            if values:
+                self.current_project_name=values[0]
+            self.show_page('projects')
 
     def install_file_drop(self):
         """Register Explorer drops on the window and the document editor."""
@@ -2969,6 +3057,13 @@ class CompactStudio(CompactStudioV4):
         if name in ('import','export'):name='tasks'
         # The retired 'documents' page is retained for compatibility tests but is not navigable.
         super().show_page(name)
+        # Legacy base class updates button backgrounds as if this were a dark
+        # sidebar. Restore the new topbar's active/inactive states after routing.
+        for page,button in self.nav_buttons.items():
+            active=page==name
+            button.configure(bg='#EEEAFB' if active else '#FFFFFF',
+                             fg='#5541AD' if active else '#586478',
+                             activebackground='#E4DDF8')
         if name=='tasks':
             self.refresh_task_selectors(self.key)
             if not self.key and self.task_doc_map:self.on_task_document_selected()
@@ -2979,14 +3074,38 @@ class CompactStudio(CompactStudioV4):
             else:self.context_label.configure(text='当前文档：尚未选择')
 
     def refresh_tree(self,select=None):
-        if hasattr(self,'tree'):self.tree.delete(*self.tree.get_children())
-        for project in self.s.project_groups():
-            pid='p:'+str(project.id)
-            if hasattr(self,'tree'):
-                self.tree.insert('','end',iid=pid,text=project.name,values=(project.name,))
-                for doc in self.s.documents_for(project.name):
-                    self.tree.insert(pid,'end',iid='d:'+doc.key,text=doc.name,values=(project.name,doc.key))
-        if select and hasattr(self,'tree') and self.tree.exists('d:'+select):self.tree.selection_set('d:'+select)
+        if not hasattr(self,'tree'):
+            return
+        self._sidebar_refreshing=True
+        try:
+            previously_selected=self.tree.selection()
+            opened={
+                iid for iid in self.tree.get_children()
+                if self.tree.item(iid,'open')
+            }
+            query=self.sidebar_query.get().strip().casefold() if hasattr(self,'sidebar_query') else ''
+            self.tree.delete(*self.tree.get_children())
+            for project in self.s.project_groups():
+                children=list(self.s.documents_for(project.name))
+                project_match=query in project.name.casefold() if query else True
+                visible=children if project_match else [
+                    doc for doc in children if query in doc.name.casefold()
+                ]
+                if not project_match and not visible:
+                    continue
+                pid='p:'+str(project.id)
+                self.tree.insert('', 'end',iid=pid,text=project.name,
+                                 open=True if query else (not opened or pid in opened),
+                                 values=(project.name,))
+                for doc in visible:
+                    self.tree.insert(pid,'end',iid='d:'+doc.key,
+                                     text=doc.name,values=(project.name,doc.key))
+            desired='d:'+select if select else (previously_selected[0] if previously_selected else '')
+            if desired and self.tree.exists(desired):
+                self.tree.selection_set(desired)
+                self.tree.see(desired)
+        finally:
+            self._sidebar_refreshing=False
         if hasattr(self,'project_list'):self.refresh_projects_page()
         if hasattr(self,'document_list'):self.refresh_documents_page()
         if hasattr(self,'import_sources'):self.refresh_import_page()
