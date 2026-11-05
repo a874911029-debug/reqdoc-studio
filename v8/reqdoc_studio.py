@@ -522,9 +522,12 @@ class Store:
             try:
                 with zipfile.ZipFile(tmp,'w',zipfile.ZIP_DEFLATED) as z:
                     z.write(db,'reqdoc-data/home/reqdoc.db')
+                    rules = self.settings.home/'organize-rules.json'
+                    if rules.is_file():
+                        z.write(rules,'reqdoc-data/home/organize-rules.json')
                     for f in self.settings.docs_dir.rglob('*'):
                         if f.is_file() and f.resolve() not in (path.resolve(),tmp.resolve()):z.write(f,'reqdoc-data/docs/'+f.relative_to(self.settings.docs_dir).as_posix())
-                    z.writestr('backup-info.json',json.dumps({'version':VERSION,'created':stamp(),'note':'数据库和文档完整备份；API 密钥不包含在备份中。'},ensure_ascii=False))
+                    z.writestr('backup-info.json',json.dumps({'version':VERSION,'created':stamp(),'note':'数据库、文档、图片和本地整理规则完整备份；API 密钥不包含在备份中。'},ensure_ascii=False))
                 os.replace(tmp,path)
             finally:tmp.unlink(missing_ok=True)
         return path
