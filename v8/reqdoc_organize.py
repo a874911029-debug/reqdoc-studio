@@ -413,7 +413,7 @@ def _assign_topics(blocks, rules, vectors, cancel):
 
 
 def _duplicate_key(block):
-    if block.kind in ("code", "table", "protected"):
+    if block.kind in ("code", "table", "protected", "list"):
         return block.topic, block.kind, block.text
     text = "\n".join(" ".join(line.split()) for line in block.text.splitlines()).strip()
     return block.topic, block.kind, unicodedata.normalize("NFC", text)

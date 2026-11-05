@@ -145,6 +145,15 @@ class OrganizeTests(unittest.TestCase):
         result = organize_with_report([("甲", "红色油画颜料 https://example.com/a\n\n本地磁盘空间 https://example.com/b")])
         self.assertEqual(result.stats["unclassified"], 2)
 
+    def test_list_indentation_difference_keeps_both_hierarchies(self):
+        result = organize_with_report([
+            ("甲", "## 列表\n\n- 主项\n  - 子项"),
+            ("乙", "## 列表\n\n- 主项\n    - 子项"),
+        ])
+        self.assertEqual(result.stats["duplicates"], 0)
+        self.assertIn("- 主项\n  - 子项", result.content)
+        self.assertIn("- 主项\n    - 子项", result.content)
+
 
 if __name__ == "__main__":
     unittest.main()
