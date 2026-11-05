@@ -35,7 +35,7 @@ def main():
     asset = {"url": BASE + output.name, "size": output.stat().st_size,
              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()}
     manifest = {"schema": 8, "version": VERSION, "minimum_supported_version": "8.0.0", "asset": asset,
-                "notes": "在 V8.0.18 资料库与任务转换基础上，新增保存失败提示并保留编辑内容；来源与任务双侧修改会记录冲突并允许选择处理；完整备份纳入本地整理规则，支持从备份单独恢复。",
+                "notes": "V8.0.19 数据安全与体验升级：保存失败时保留编辑内容并提示；来源与任务双侧修改会记录冲突，可选择采用来源或保留任务；完整备份包含整理规则并支持安全恢复；多文件导入逐个读取，中文路径与无效路径校验增强；统一浅色工作区、白色编辑区和主要操作按钮样式。",
                 "source_commit": os.environ.get("GITHUB_SHA", "")}
     (dist / "v8-latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "utf-8")
     print(f"V8 package: {output.name} size={asset['size']} sha256={asset['sha256']}")
