@@ -92,7 +92,7 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(self.app.pages["tasks"].winfo_ismapped())
         self.assertTrue(self.app.task_working_panel.winfo_ismapped())
         self.assertTrue(self.app.task_right_panel.winfo_ismapped())
-        self.assertEqual(self.store.service.get_document(self.doc.key).name, "文档 001")
+        self.assertEqual(self.app.s.document(self.doc.key).name, "文档 001")
 
     def wait_for_organization(self, dialog):
         save = self.button(dialog, "另存整理文档")
