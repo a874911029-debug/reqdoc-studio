@@ -21,6 +21,17 @@ def configure_theme(root):
 
     # The app shell stays light grey; the content workspace and editors are white.
     style.configure("TFrame", background=white)
+    style.configure("Sidebar.TFrame", background="#F8F9FC")
+    style.configure(
+        "Sidebar.Treeview", background="#F8F9FC", fieldbackground="#F8F9FC",
+        foreground=ink, rowheight=32, borderwidth=0,
+        font=("Microsoft YaHei UI", 9),
+    )
+    style.map(
+        "Sidebar.Treeview", background=[("selected", "#EDEAFB")],
+        foreground=[("selected", "#5541AD")],
+    )
+
     style.configure("TLabel", background=white, foreground=ink, font=font)
     style.configure("TLabelframe", background=white, bordercolor=border, relief="solid")
     style.configure("TLabelframe.Label", background=white, foreground="#1F3B59", font=heading_font)
