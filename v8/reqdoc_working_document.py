@@ -2185,8 +2185,8 @@ def prepare_import_documents(paths, reader=None):
             path = Path(str(raw)).resolve(strict=True)
             if not path.is_file():
                 raise ValueError("路径不是文件。")
-            content, warnings = reader(path)
-            prepared.append((path, content, list(warnings or [])))
+            content, _warnings = reader(path)
+            prepared.append((path, content))
         except Exception as error:
             try:
                 name = Path(str(raw)).name or str(raw)
@@ -2220,12 +2220,7 @@ def import_paths(self, paths):
     if not prepared:
         detail = "\n".join(read_errors[:20])
         raise ValueError("没有可导入的资料。" + ("\n" + detail if detail else ""))
-    prepared = [(path, content) for path, content, _warnings in prepared]
-    source_warnings = [
-        f"{path.name}：{warning}"
-        for path, _content, warnings in prepare_import_documents(paths, read_source)[0]
-        for warning in warnings
-    ]
+
     win = tk.Toplevel(self)
     win.title("导入文件：创建独立副本")
     self.sized_dialog(win, 900, 680)
