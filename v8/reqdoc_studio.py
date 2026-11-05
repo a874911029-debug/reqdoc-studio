@@ -394,6 +394,7 @@ class Store:
         conn.executemany('DELETE FROM studio_trash WHERE id=?',[(rid,) for rid in ids])
         conn.executemany('DELETE FROM studio_order WHERE id=?',[(rid,) for rid in ids])
         conn.executemany('DELETE FROM studio_drafts WHERE key=?',[(f'task:{key}:{rid}',) for rid in ids])
+        conn.executemany('DELETE FROM studio_sync_conflicts WHERE doc=? AND task_id=?',[(key,rid) for rid in ids])
 
     def apply_document_task_edits(self,key,completion,removed):
         """Apply edits to the visible status lines as one transaction."""
