@@ -17,6 +17,7 @@ from reqdoc_organize import organize_materials
 from reqdoc_task_conversion import conversion_items, strip_task_block
 from reqdoc_working_document import (
     refresh_sync_conflict_button, resolve_sync_conflict, save_import_task_link,
+    prepare_import_documents, restore_organization_rules_from_backup,
     sync_import_tasks, write_import_copy,
 )
 from test_v8_feedback import WorkingStore, WorkingStudio, widgets
@@ -228,7 +229,7 @@ class LibraryConversionTests(unittest.TestCase):
 
     def test_source_and_task_changes_create_resolvable_conflict(self):
         app = self.app()
-        source_content = "## 灯光\\n\\n照明使用暖色调。"
+        source_content = "## 灯光\n\n照明使用暖色调。"
         items = conversion_items(source_content)
         self.assertEqual(len(items), 1)
         item = items[0]
@@ -240,7 +241,7 @@ class LibraryConversionTests(unittest.TestCase):
             write_import_copy(conn, self.doc.key, copy_id, "灯光资料.md", source_content)
             save_import_task_link(conn, self.doc.key, copy_id, task.id, 0, item)
 
-        task_edit = item["content"] + "\\n任务侧补充了限制条件。"
+        task_edit = item["content"] + "\n任务侧补充了限制条件。"
         self.store.save_task(
             self.doc.key, item["title"], item["section"], task_edit, rid=task.id
         )
@@ -277,3 +278,58 @@ class LibraryConversionTests(unittest.TestCase):
         self.assertEqual(status, ("resolved", "task"))
         self.assertIn("冷色调", link["content"])
         self.assertEqual(app.sync_conflict_button.cget("text"), "同步冲突 (0)")
+
+
+    def test_import_preparation_keeps_good_unicode_files_when_one_file_fails(self):
+        folder = self.root / "中文资料目录"
+        folder.mkdir()
+        good = folder / "场景说明.md"
+        bad = folder / "损坏文件.txt"
+        good.write_text("# 场景说明\\n\\n保留这份内容。", encoding="utf-8")
+        bad.write_text("unreadable", encoding="utf-8")
+
+        def reader(path):
+            if path.name == bad.name:
+                raise ValueError("模拟编码或格式错误")
+            return path.read_text("utf-8"), []
+
+        prepared, errors = prepare_import_documents([good, bad], reader)
+        self.assertEqual(prepared, [(good.resolve(), good.read_text("utf-8"))])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("损坏文件.txt", errors[0])
+        self.assertIn("模拟编码或格式错误", errors[0])
+
+    def test_restore_rules_validates_before_backup_and_replaces_atomically(self):
+        archive = self.root / "rules-backup.zip"
+        target = self.settings.home / "organize-rules.json"
+        target.write_text(json.dumps({"rules_text": "旧规则"}), encoding="utf-8")
+        expected = {"mode": "topic", "merge_duplicates": True, "suggest_similar": False,
+                    "rules_text": "灯光 = 照明"}
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("reqdoc-data/home/organize-rules.json",
+                             json.dumps(expected, ensure_ascii=False).encode("utf-8"))
+        calls = []
+        safety_backup = self.root / "before-restore.zip"
+        result = restore_organization_rules_from_backup(
+            archive, target, lambda: calls.append(True) or safety_backup
+        )
+        self.assertEqual(result, safety_backup)
+        self.assertEqual(calls, [True])
+        self.assertEqual(json.loads(target.read_text("utf-8")), expected)
+
+    def test_invalid_rules_backup_is_rejected_before_creating_safety_backup(self):
+        archive = self.root / "invalid-rules-backup.zip"
+        target = self.settings.home / "organize-rules.json"
+        original = {"mode": "topic", "merge_duplicates": True,
+                    "suggest_similar": True, "rules_text": "旧规则"}
+        target.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("reqdoc-data/home/organize-rules.json",
+                             json.dumps({"mode": "invalid"}).encode("utf-8"))
+        calls = []
+        with self.assertRaises(ValueError):
+            restore_organization_rules_from_backup(
+                archive, target, lambda: calls.append(True)
+            )
+        self.assertEqual(calls, [])
+        self.assertEqual(json.loads(target.read_text("utf-8")), original)
