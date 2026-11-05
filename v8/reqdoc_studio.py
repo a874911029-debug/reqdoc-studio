@@ -3562,7 +3562,12 @@ class CompactStudio(CompactStudioV4):
         try:self.keep_draft();self.persist_notes()
         except Exception as exc:
             try:
-                if not messagebox.askyesno('保存失败',str(exc)+'\n仍然退出吗？',parent=self):return
+                if not messagebox.askyesno(
+                    '保存失败',
+                    str(exc)+'\n\n仍然退出会丢失当前尚未保存的编辑内容。建议选择“否”，留在窗口中重试保存。',
+                    default=messagebox.NO,
+                    parent=self,
+                ):return
             except tk.TclError:pass
         self._closing=True
         self._update_in_progress=False
