@@ -2254,7 +2254,7 @@ def import_paths(self, paths):
                 raise ValueError("没有识别到可转换的内容。可选择只创建导入副本。")
             if estimated > 500:
                 raise ValueError("一次导入最多生成 500 条任务，请先缩小文件范围。")
-        all_warnings = list(source_warnings)
+        all_warnings = []
         self.keep_draft()
         with ExitStack() as rollback:
             with self.s.connect() as connection:
