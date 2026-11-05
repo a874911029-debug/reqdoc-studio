@@ -805,11 +805,11 @@ def build_home_page(self):
 
 def build_tasks_page(self):
     page = self.pages["tasks"]
-    self.tasks_heading = ttk.Label(page, text="工作文档 / 任务处理", font=("Microsoft YaHei", 17, "bold"))
+    self.tasks_heading = ttk.Label(page, text="文档工作台", font=("Microsoft YaHei UI", 15, "bold"))
     self.tasks_heading.pack(anchor="w", pady=(0, 3))
     self.tasks_subtitle = ttk.Label(
         page,
-        text="左侧可切换工作文档和各导入副本，右侧显示当前文档的任务。",
+        text="在中间编辑文档，在右侧查看关联任务和内容详情。",
         foreground="#64748B",
     )
     self.tasks_subtitle.pack(anchor="w", pady=(0, 8))
@@ -836,9 +836,12 @@ def build_tasks_page(self):
     self.tasks_split = ttk.Panedwindow(page, orient="horizontal")
     self.tasks_split.pack(fill="both", expand=True)
 
-    left = ttk.LabelFrame(self.tasks_split, text="文档编辑", padding=7)
+    left = ttk.Frame(self.tasks_split, padding=(0, 6, 14, 0))
     self.task_working_panel = left
     self.tasks_split.add(left, weight=3)
+    ttk.Label(left, text="文档内容", font=("Microsoft YaHei UI", 12, "bold")).pack(
+        anchor="w", pady=(0, 10)
+    )
     viewbar = ttk.Frame(left)
     viewbar.pack(fill="x", pady=(0, 5))
     ttk.Label(viewbar, text="显示文档").pack(side="left", padx=(0, 6))
@@ -918,16 +921,23 @@ def build_tasks_page(self):
     self._working_loading = False
     self._working_mode = "manual"
 
-    right = ttk.LabelFrame(self.tasks_split, text="任务列表", padding=7)
+    right = ttk.Frame(self.tasks_split, padding=(12, 6, 0, 0))
     self.task_right_panel = right
     self.tasks_split.add(right, weight=2)
+    ttk.Label(right, text="任务与属性", font=("Microsoft YaHei UI", 12, "bold")).pack(
+        anchor="w", pady=(0, 10)
+    )
     self.tasks_context = ttk.Label(right, text="尚未选择文档。", foreground="#64748B")
     self.tasks_context.pack(anchor="w", pady=(0, 5))
     self.task_right_split = ttk.Panedwindow(right, orient="vertical")
     self.task_right_split.pack(fill="both", expand=True)
-    task_list_panel = ttk.LabelFrame(self.task_right_split, text="任务列表", padding=6)
-    task_detail_panel = ttk.LabelFrame(
-        self.task_right_split, text="任务明细（可自由框选、右键复制）", padding=6
+    task_list_panel = ttk.Frame(self.task_right_split, padding=(0, 5, 0, 0))
+    ttk.Label(task_list_panel, text="关联任务", foreground="#657085").pack(
+        anchor="w", pady=(0, 7)
+    )
+    task_detail_panel = ttk.Frame(self.task_right_split, padding=(0, 10, 0, 0))
+    ttk.Label(task_detail_panel, text="任务详情 · 可复制", foreground="#657085").pack(
+        anchor="w", pady=(0, 7)
     )
     self.task_right_split.add(task_list_panel, weight=3)
     self.task_right_split.add(task_detail_panel, weight=2)
