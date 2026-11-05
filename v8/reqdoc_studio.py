@@ -2093,7 +2093,12 @@ class CompactStudio(CompactStudioV4):
         self.tree.configure(yscrollcommand=sidebar_scroll.set)
         sidebar_scroll.pack(side='right',fill='y')
         self.tree.pack(side='left',fill='both',expand=True)
-        self.tree.bind('<<TreeviewSelect>>',
+        # Route only genuine user input; TreeviewSelect also fires during refresh.
+        self.tree.bind('<ButtonRelease-1>',
+                       lambda event:self.after_idle(lambda:self.guard(self.sidebar_tree_select)))
+        self.tree.bind('<Return>',
+                       lambda event:self.guard(self.sidebar_tree_select))
+        self.tree.bind('<Double-1>',
                        lambda event:self.guard(self.sidebar_tree_select))
         tk.Label(self.doc_sidebar,text='本地文档 · 不联网',
                  bg='#F8F9FC',fg='#8993A4',
@@ -3079,8 +3084,9 @@ class CompactStudio(CompactStudioV4):
         self._sidebar_refreshing=True
         try:
             previously_selected=self.tree.selection()
+            existing_projects=self.tree.get_children()
             opened={
-                iid for iid in self.tree.get_children()
+                iid for iid in existing_projects
                 if self.tree.item(iid,'open')
             }
             query=self.sidebar_query.get().strip().casefold() if hasattr(self,'sidebar_query') else ''
@@ -3095,7 +3101,7 @@ class CompactStudio(CompactStudioV4):
                     continue
                 pid='p:'+str(project.id)
                 self.tree.insert('', 'end',iid=pid,text=project.name,
-                                 open=True if query else (not opened or pid in opened),
+                                 open=True if query else (not existing_projects or pid in opened),
                                  values=(project.name,))
                 for doc in visible:
                     self.tree.insert(pid,'end',iid='d:'+doc.key,
