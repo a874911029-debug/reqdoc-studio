@@ -65,7 +65,7 @@ class FeedbackTests(unittest.TestCase):
         errors = patch("reqdoc_studio.messagebox.showerror", side_effect=lambda title, message, **kwargs: self.fail(message))
         errors.start()
         self.addCleanup(errors.stop)
-        self.app.geometry("900x600")
+        self.app.geometry("1120x700")
         self.app.report_callback_exception = lambda exc, value, tb: self.fail(f"Tk callback failed: {value}")
         self.app.load_doc(self.doc.key)
 
@@ -97,6 +97,24 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(self.app.task_working_panel.winfo_manager())
         self.assertTrue(self.app.task_right_panel.winfo_manager())
         self.assertEqual(self.app.s.document(self.doc.key).name, "文档 001")
+
+    def test_task_workspace_split_stays_usable_after_window_resize(self):
+        self.app.show_page("tasks")
+        self.app.geometry("1200x760")
+        self.app.update()
+        width = self.app.tasks_split.winfo_width()
+        sash = self.app.tasks_split.sashpos(0)
+        self.assertGreaterEqual(sash, 380)
+        self.assertGreaterEqual(width - sash, 310)
+
+        self.app.geometry("1120x700")
+        self.app.update()
+        width = self.app.tasks_split.winfo_width()
+        sash = self.app.tasks_split.sashpos(0)
+        self.assertGreaterEqual(sash, 380)
+        self.assertGreaterEqual(width - sash, 310)
+        self.assertGreaterEqual(self.app.task_working_panel.winfo_width(), 380)
+        self.assertGreaterEqual(self.app.task_right_panel.winfo_width(), 310)
 
     def wait_for_organization(self, dialog):
         save = self.button(dialog, "另存整理文档")

@@ -1045,18 +1045,55 @@ def build_tasks_page(self):
     self._task_focus_id = None
     self._working_saved_key = None
     self._task_sashes_initialized = False
-    self.task_right_split.bind("<Configure>", lambda event: self.position_task_sashes())
+    self._task_sash_ratio = 0.60
+    self._task_sash_after_id = None
+    # The task page is built while hidden. Map + Configure ensure the first
+    # sash placement runs only after the page has a real, final width.
+    self.tasks_split.bind("<Map>", lambda event: self.position_task_sashes(), add="+")
+    self.tasks_split.bind("<Configure>", lambda event: self.position_task_sashes(), add="+")
+    # Remember an intentional manual split; keep that ratio when the window resizes.
+    self.tasks_split.bind("<ButtonRelease-1>", lambda event: self.remember_task_sash_ratio(), add="+")
+
+
+def remember_task_sash_ratio(self):
+    width = self.tasks_split.winfo_width()
+    if width <= 1:
+        return
+    position = self.tasks_split.sashpos(0)
+    if position > 0:
+        self._task_sash_ratio = max(0.45, min(0.75, position / width))
 
 
 def position_task_sashes(self):
-    if self._task_sashes_initialized:
-        return
-    width = self.tasks_split.winfo_width()
-    height = self.task_right_split.winfo_height()
-    if width > 1 and height > 1:
-        self.tasks_split.sashpos(0, min(int(width * 0.60), width - 310))
+    pending = getattr(self, "_task_sash_after_id", None)
+    if pending is not None:
+        try:
+            self.after_cancel(pending)
+        except tk.TclError:
+            pass
+
+    def apply():
+        self._task_sash_after_id = None
+        if not self.tasks_split.winfo_ismapped():
+            return
+        width = self.tasks_split.winfo_width()
+        height = self.task_right_split.winfo_height()
+        if width < 650 or height < 260:
+            return
+
+        min_left = 380
+        min_right = 310
+        if width < min_left + min_right:
+            min_left = max(300, width - 300)
+            min_right = max(260, width - min_left)
+
+        ratio = getattr(self, "_task_sash_ratio", 0.60)
+        left_width = max(min_left, min(int(width * ratio), width - min_right))
+        self.tasks_split.sashpos(0, left_width)
         self.task_right_split.sashpos(0, max(230, int(height * 0.60)))
         self._task_sashes_initialized = True
+
+    self._task_sash_after_id = self.after_idle(apply)
 
 
 def build_progress_page(self):

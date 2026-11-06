@@ -2034,11 +2034,11 @@ class CompactStudio(CompactStudioV4):
         self.title(f'文档工作台 · {VERSION} · 三栏界面候选版')
         sw=self.winfo_screenwidth();sh=self.winfo_screenheight()
         self.geometry(f'{min(1420,max(900,sw-50))}x{min(880,max(620,sh-100))}')
-        self.minsize(900,600)
+        self.minsize(1120,700)
         self.checked_ids=set();self.visible_ids=[];self._refreshing_tasks=False;self._task_focus_id=None
         self.insert_after_id=None;self.progress_chapter_map={};self.progress_group_map={};self.progress_task_doc_map={}
         self.current_project_name=None;self.document_map={};self.import_source_map={}
-        # V8.0.20 candidate: document-first shell; preserve existing page and task widgets.
+        # V8.0.19 isolated UI preview: document-first shell; preserve existing page and task widgets.
         self.configure(bg='#F5F6F9')
         shell=tk.Frame(self,bg='#F5F6F9')
         shell.pack(fill='both',expand=True)
@@ -2238,7 +2238,7 @@ class CompactStudio(CompactStudioV4):
         # First (hidden) value stores project name to keep compatibility with existing services.
         self.project_list=ttk.Treeview(frame,columns=('project','documents','tasks','done','rate'),show='tree headings',selectmode='browse')
         self.project_list.heading('#0',text='项目 / 文档')
-        self.project_list.column('#0',width=510,minwidth=230,stretch=True)
+        self.project_list.column('#0',width=440,minwidth=230,stretch=True)
         self.project_list.heading('project',text='')
         self.project_list.column('project',width=1,minwidth=1,stretch=False)
         for key,title,width in [('documents','文档数',80),('tasks','任务数',90),('done','已完成',90),('rate','完成率',90)]:
@@ -2274,7 +2274,7 @@ class CompactStudio(CompactStudioV4):
         for col,label,width in [('tasks','任务数',100),('done','已完成',100),('rate','完成率',110)]:
             self.document_list.heading(col,text=label)
             self.document_list.column(col,width=width,minwidth=75,stretch=False,anchor='center')
-        self.document_list.column('#0',width=520,minwidth=220,stretch=True)
+        self.document_list.column('#0',width=440,minwidth=220,stretch=True)
         self.document_list.pack(fill='both',expand=True)
         self.document_list.bind('<Double-1>',lambda e:self.guard(self.open_selected_document))
         self.document_list.bind('<<TreeviewSelect>>',self.on_document_tree_select)
